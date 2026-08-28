@@ -194,6 +194,33 @@ fn main() {
         }
     });
 
+    // -- Launch LoL client --
+    let launch_weak = sources_weak.clone();
+    sources_window.on_launch_lol_clicked(move || {
+        if lcu::cmd::check_if_lol_running() {
+            let w = launch_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = w.upgrade() {
+                    win.set_launch_status(SharedString::from("LoL 客户端已在运行"));
+                }
+            });
+            return;
+        }
+
+        let w = launch_weak.clone();
+        let result = lcu::cmd::launch_lol_client();
+        let msg = match result {
+            Ok(path) => format!("LoL 客户端已启动: {}", path.display()),
+            Err(err) => format!("无法启动 LoL 客户端: {err}"),
+        };
+
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = w.upgrade() {
+                win.set_launch_status(SharedString::from(&msg));
+            }
+        });
+    });
+
     // -- Runes window: close --
     let runes_weak = runes_window.as_weak();
     runes_window.on_close_requested(move || {
@@ -253,6 +280,27 @@ fn main() {
     let sources_weak3 = sources_window.as_weak();
     let state_c3 = state.clone();
     rt_handle.spawn(lcu_monitor_task(sources_weak3, runes_weak2, state_c3));
+
+    // Auto-launch LoL if it is not already running.
+    let auto_launch_weak = sources_window.as_weak();
+    rt_handle.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let msg = if lcu::cmd::check_if_lol_running() {
+            "LoL 客户端已在运行".to_string()
+        } else {
+            match lcu::cmd::launch_lol_client() {
+                Ok(path) => format!("LoL 客户端已启动: {}", path.display()),
+                Err(err) => format!("无法启动 LoL 客户端: {err}"),
+            }
+        };
+
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = auto_launch_weak.upgrade() {
+                win.set_launch_status(SharedString::from(&msg));
+            }
+        });
+    });
 
     // -- Show sources window and run event loop --
     sources_window.show().unwrap();
@@ -327,6 +375,7 @@ async fn lcu_monitor_task(
                     if let Some(win) = sw.upgrade() {
                         win.set_lcu_status(SharedString::from("disconnected"));
                         win.set_lcu_summoner(SharedString::from(""));
+                        win.set_lol_running(false);
                     }
                     if let Some(win) = rw.upgrade() {
                         win.set_has_champion(false);
@@ -353,6 +402,13 @@ async fn lcu_monitor_task(
                 s.current_champion_id = 0;
                 s.current_champion_alias.clear();
             }
+
+            let sw = sources_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = sw.upgrade() {
+                    win.set_lol_running(true);
+                }
+            });
         }
 
         if current_auth_url.is_empty() {

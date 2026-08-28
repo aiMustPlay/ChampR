@@ -25,10 +25,13 @@ export component SourcesWindow inherits Window {
     in-out property <string> lcu-status: "disconnected"; // "disconnected" | "authorizing" | "needs-admin" | "connected"
     in-out property <string> lcu-summoner: "";
     in-out property <bool> applying-builds: false;
+    in-out property <string> launch-status: "";
+    in-out property <bool> lol-running: false;
     in-out property <string> apply-status: "";           // "", "Applying…", "Done! (N champions)", "Error: …"
 
     // --- callbacks ---
     callback apply-builds-clicked();
+    callback launch-lol-clicked();
 
     VerticalBox {
         padding: 16px;
@@ -118,6 +121,34 @@ export component SourcesWindow inherits Window {
 
         if root.apply-status != "" : Text {
             text: root.apply-status;
+            font-size: 13px;
+            horizontal-alignment: center;
+            color: #666666;
+        }
+
+        // Launch LoL client button + status
+        HorizontalBox {
+            alignment: center;
+            spacing: 12px;
+
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                background: root.lol-running ? #22cc44 : #999999;
+            }
+
+            Button {
+                text: root.lol-running ? "LoL Running" : "Launch LoL";
+                enabled: !root.lol-running;
+                clicked => {
+                    root.launch-lol-clicked();
+                }
+            }
+        }
+
+        if root.launch-status != "" : Text {
+            text: root.launch-status;
             font-size: 13px;
             horizontal-alignment: center;
             color: #666666;

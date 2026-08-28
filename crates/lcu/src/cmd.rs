@@ -191,6 +191,69 @@ pub fn get_lcu_process_id() -> Option<u32> {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn locate_lol_client() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let candidates = [
+        r"C:\Riot Games\Riot Client\RiotClientServices.exe",
+        r"C:\Program Files\Riot Games\Riot Client\RiotClientServices.exe",
+        r"C:\Program Files (x86)\Riot Games\Riot Client\RiotClientServices.exe",
+        r"C:\Riot Games\League of Legends\LeagueClient.exe",
+        r"C:\Program Files\Riot Games\League of Legends\LeagueClient.exe",
+        r"C:\Program Files (x86)\Riot Games\League of Legends\LeagueClient.exe",
+    ];
+
+    if let Some(path) = candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+    {
+        return Some(path);
+    }
+
+    if let Ok(output) = get_cmd_output() {
+        let install_dir = PathBuf::from(&output.dir);
+        let dynamic_candidates = [
+            install_dir.join("Riot Client").join("RiotClientServices.exe"),
+            install_dir.join("Launcher").join("Client.exe"),
+            install_dir.join("LeagueClient").join("LeagueClient.exe"),
+            install_dir.join("TCLS").join("client.exe"),
+            install_dir.join("LeagueClient.exe"),
+        ];
+
+        return dynamic_candidates
+            .into_iter()
+            .find(|path| path.exists());
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn launch_lol_client() -> Result<std::path::PathBuf, String> {
+    use std::process::Command;
+
+    let path = locate_lol_client()
+        .ok_or_else(|| "Could not locate League of Legends client".to_string())?;
+
+    Command::new(&path)
+        .spawn()
+        .map_err(|err| format!("Failed to launch {}: {err}", path.display()))?;
+
+    Ok(path)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn locate_lol_client() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn launch_lol_client() -> Result<std::path::PathBuf, String> {
+    Err("Launching LoL is currently supported on Windows only".to_string())
+}
+
 #[cfg(not(target_os = "windows"))]
 pub fn get_lcu_process_id() -> Option<u32> {
     get_non_windows_lcu_process().ok().map(|(pid, _)| pid)
