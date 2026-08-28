@@ -1,7 +1,8 @@
-FROM rust:1.86-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 WORKDIR /app
 
 COPY . .
+RUN printf '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/index/"\n' > "$CARGO_HOME/config.toml"
 RUN cargo build --release -p server
 
 FROM debian:bookworm-slim AS runtime

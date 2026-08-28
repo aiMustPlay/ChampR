@@ -142,6 +142,26 @@ pub async fn apply_builds_from_source(
     Ok(())
 }
 
+pub async fn apply_builds_from_id(
+    dir: &String,
+    source: &String,
+    champion_id: i64,
+    is_tencent: bool,
+) -> Result<(), FetchError> {
+    let sections = web::list_builds_by_id(source, champion_id).await?;
+    let champion_alias = sections
+        .first()
+        .map(|section| section.alias.clone())
+        .unwrap_or_default();
+
+    if champion_alias.is_empty() {
+        return Err(FetchError::Failed);
+    }
+
+    apply_builds_from_data(sections, dir, source, &champion_alias, is_tencent);
+    Ok(())
+}
+
 pub async fn fetch_and_apply(
     dir: &String,
     source: &String,

@@ -131,6 +131,8 @@ export interface OpggPageData {
   itemBuilds: OpggItemBuilds;
   /** Champion tier from the page, e.g. "1", "2", "OP", "S" */
   championTier: string | null;
+  /** Riot numeric champion id, when available from the pre-fetched champion list */
+  championId?: number;
 }
 
 // ============================================================
@@ -209,6 +211,7 @@ export interface CrawlerOptions {
   concurrency?: number;    // default: 3
   position?: string;       // default: "" (all positions from page)
   championTiers?: Map<string, number>; // pre-fetched tier map from OP.GG champion list
+  championIds?: Map<string, number>;   // pre-fetched Riot champion id map from OP.GG
 }
 
 // ============================================================

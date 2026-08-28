@@ -100,14 +100,15 @@ async function main() {
   // Handle --all flag: fetch champion list + tiers from OP.GG
   if (allModeRequested) {
     console.log('[opgg] Fetching champion list from OP.GG...');
-    const { champions, tiers } = await fetchChampionList(
+    const { champions, tiers, championIds } = await fetchChampionList(
       options.mode,
       options.region,
       options.tier,
     );
     options.champions = champions;
     options.championTiers = tiers;
-    console.log(`[opgg] Found ${champions.length} champions with tier data`);
+    options.championIds = championIds;
+    console.log(`[opgg] Found ${champions.length} champions with tier and id data`);
   }
 
   // Validate we have something to crawl

@@ -29,7 +29,15 @@ const ALT_MODES: ReadonlySet<GameMode> = new Set(['aram', 'urf', 'aram-mayhem'])
 
 /** Shared anti-bot pre-navigation hooks */
 const ANTI_BOT_HOOKS = [
-  async ({ page }: { page: import('playwright').Page }) => {
+  async (
+    { page }: { page: import('playwright').Page },
+    gotoOptions: any,
+  ) => {
+    if (gotoOptions) {
+      gotoOptions.waitUntil = 'domcontentloaded';
+      gotoOptions.timeout = 90_000;
+    }
+
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
       Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
@@ -37,19 +45,23 @@ const ANTI_BOT_HOOKS = [
       // @ts-ignore
       window.chrome = { runtime: {} };
     });
-    await page.context().setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9',
-      'User-Agent': USER_AGENT,
-      'sec-ch-ua': '"Chromium";v="134", "Google Chrome";v="134", "Not:A-Brand";v="24"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-    });
+    await page
+      .context()
+      .setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9',
+        'User-Agent': USER_AGENT,
+        'sec-ch-ua': '"Chromium";v="134", "Google Chrome";v="134", "Not:A-Brand";v="24"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+      })
+      .catch(() => {});
   },
 ];
 
 /** Shared launch options */
 const LAUNCH_OPTIONS = {
   headless: true,
+  channel: 'msedge',
   args: [
     '--disable-blink-features=AutomationControlled',
     '--no-sandbox',
@@ -94,7 +106,11 @@ export async function fetchChampionList(
   mode: GameMode = DEFAULT_MODE,
   region: string = DEFAULT_REGION,
   tier: string = DEFAULT_TIER,
-): Promise<{ champions: string[]; tiers: Map<string, number> }> {
+): Promise<{
+  champions: string[];
+  tiers: Map<string, number>;
+  championIds: Map<string, number>;
+}> {
   let url: string;
 
   if (ALT_MODES.has(mode)) {
@@ -141,13 +157,15 @@ export async function fetchChampionList(
 
   const champions = result.map((c) => c.key);
   const tiers = new Map<string, number>();
+  const championIds = new Map<string, number>();
   for (const c of result) {
     tiers.set(c.key, c.tier);
+    championIds.set(c.key, c.id);
   }
 
-  log(`Champion list: ${champions.length} champions, all with tiers`);
+  log(`Champion list: ${champions.length} champions, all with tiers and ids`);
 
-  return { champions, tiers };
+  return { champions, tiers, championIds };
 }
 
 /**
@@ -158,6 +176,7 @@ function makeRequestHandler(
   results: LcuBuildSection[],
   outputDir: string,
   championTiers: Map<string, number> | undefined,
+  championIds: Map<string, number> | undefined,
   statusMap: Map<string, ChampionCrawlStatus>,
 ) {
   return async (ctx: PlaywrightCrawlingContext) => {
@@ -172,6 +191,9 @@ function makeRequestHandler(
     log.info(`Crawling ${champion} (mode: ${m})...`, { url: request.url });
 
     const pageData = await parseBuildPage(page, champion, r, t, m);
+    if (championIds && championIds.has(champion)) {
+      pageData.championId = championIds.get(champion);
+    }
     const buildSection = transformPageData(pageData);
 
     // Override championTier from pre-fetched tier map if available
@@ -228,6 +250,7 @@ export async function crawlChampions(
     outputDir = './output',
     concurrency = DEFAULT_CONCURRENCY,
     championTiers,
+    championIds,
   } = options;
 
   // Build the list of champions to crawl
@@ -265,12 +288,18 @@ export async function crawlChampions(
 
   const crawler = new PlaywrightCrawler({
     maxConcurrency: concurrency,
-    requestHandlerTimeoutSecs: 60,
-    navigationTimeoutSecs: 30,
+    requestHandlerTimeoutSecs: 120,
+    navigationTimeoutSecs: 90,
     launchContext: { launchOptions: LAUNCH_OPTIONS },
     browserPoolOptions: { useFingerprints: false },
     preNavigationHooks: ANTI_BOT_HOOKS,
-    requestHandler: makeRequestHandler(results, outputDir, championTiers, statusMap),
+    requestHandler: makeRequestHandler(
+      results,
+      outputDir,
+      championTiers,
+      championIds,
+      statusMap,
+    ),
 
     failedRequestHandler({ request, log }) {
       const champion = (request.userData?.champion as string) || request.url;
@@ -312,13 +341,19 @@ export async function crawlChampions(
 
     const retryCrawler = new PlaywrightCrawler({
       maxConcurrency: 1,
-      requestHandlerTimeoutSecs: 90,
-      navigationTimeoutSecs: 45,
+      requestHandlerTimeoutSecs: 150,
+      navigationTimeoutSecs: 120,
       launchContext: { launchOptions: LAUNCH_OPTIONS },
       browserPoolOptions: { useFingerprints: false },
       preNavigationHooks: ANTI_BOT_HOOKS,
       // makeRequestHandler will overwrite the 'failed' statusMap entry on recovery
-      requestHandler: makeRequestHandler(results, outputDir, championTiers, statusMap),
+      requestHandler: makeRequestHandler(
+        results,
+        outputDir,
+        championTiers,
+        championIds,
+        statusMap,
+      ),
 
       failedRequestHandler({ request, log }) {
         const champion = (request.userData?.champion as string) || request.url;

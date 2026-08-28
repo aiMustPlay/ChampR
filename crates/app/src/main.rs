@@ -38,6 +38,10 @@ struct AppState {
     champions_map: ChampionsMap,
     /// Runes for the currently displayed champion, kept so we can index into them.
     current_runes: Vec<Rune>,
+    /// Champion currently selected in the League client, if any.
+    current_champion_id: i64,
+    /// Data Dragon champion id used as the backend alias (e.g. "Aatrox").
+    current_champion_alias: String,
 }
 
 impl Default for AppState {
@@ -48,6 +52,8 @@ impl Default for AppState {
             lol_dir: String::new(),
             champions_map: ChampionsMap::new(),
             current_runes: Vec::new(),
+            current_champion_id: 0,
+            current_champion_alias: String::new(),
         }
     }
 }
@@ -79,11 +85,24 @@ fn main() {
         let weak = sources_weak.clone();
         let handle = rt_handle_ref.clone();
         move || {
-            let s = state_c.lock().unwrap();
-            let champions = s.champions_map.clone();
-            let dir = s.lol_dir.clone();
-            let is_tencent = s.is_tencent;
-            drop(s);
+            let (champion_alias, current_champion_id, dir, is_tencent, auth_url) = {
+                let s = state_c.lock().unwrap();
+                (
+                    s.current_champion_alias.clone(),
+                    s.current_champion_id,
+                    s.lol_dir.clone(),
+                    s.is_tencent,
+                    s.auth_url.clone(),
+                )
+            };
+            info!(
+                "apply builds clicked: alias={:?}, id={}, dir={:?}, tencent={}, auth={}",
+                champion_alias,
+                current_champion_id,
+                dir,
+                is_tencent,
+                !auth_url.is_empty()
+            );
 
             if dir.is_empty() {
                 let w = weak.clone();
@@ -97,7 +116,7 @@ fn main() {
                 return;
             }
 
-            let selected = vec![DEFAULT_SOURCE_VALUE.to_string()];
+            let source = DEFAULT_SOURCE_VALUE.to_string();
 
             // Set applying state
             let w = weak.clone();
@@ -110,15 +129,59 @@ fn main() {
 
             let weak2 = weak.clone();
             handle.spawn(async move {
-                let logs = Arc::new(Mutex::new(Vec::new()));
-                let result =
-                    lcu::builds::batch_apply(selected, champions, dir, is_tencent, logs.clone())
-                        .await;
+                let mut champion_id = current_champion_id;
+                if champion_id == 0 && !auth_url.is_empty() {
+                    let endpoint = format!("https://{auth_url}");
+                    let session = lcu_api::get_session(&endpoint).await;
+                    info!("apply builds LCU session: {:?}", session);
+                    if let Ok(Some(cid)) = session {
+                        champion_id = cid;
+                    }
+                }
 
-                let count = logs.lock().unwrap().len();
+                if champion_id == 0 && champion_alias.is_empty() {
+                    let w = weak2.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = w.upgrade() {
+                            win.set_applying_builds(false);
+                            win.set_apply_status(SharedString::from("Select a champion first"));
+                        }
+                    });
+                    return;
+                }
+
+                let result = if champion_id > 0 {
+                    lcu::builds::apply_builds_from_id(
+                        &dir,
+                        &source,
+                        champion_id,
+                        is_tencent,
+                    )
+                    .await
+                } else {
+                    lcu::builds::apply_builds_from_source(
+                        &dir,
+                        &source,
+                        &champion_alias,
+                        is_tencent,
+                    )
+                    .await
+                };
+
+                let champion_label = if champion_id > 0 {
+                    champion_id.to_string()
+                } else {
+                    champion_alias.clone()
+                };
+                info!(
+                    "apply builds result for {}: {:?}",
+                    champion_label,
+                    result.as_ref().err()
+                );
+
                 let msg = match result {
-                    Ok(()) => format!("Done! Applied builds for {} champions", count),
-                    Err(()) => "Error applying builds".to_string(),
+                    Ok(()) => format!("Done! Applied builds for {}", champion_label),
+                    Err(_) => format!("Error applying builds for {}", champion_label),
                 };
 
                 let _ = slint::invoke_from_event_loop(move || {
@@ -254,6 +317,8 @@ async fn lcu_monitor_task(
                     s.auth_url.clear();
                     s.lol_dir.clear();
                     s.is_tencent = false;
+                    s.current_champion_id = 0;
+                    s.current_champion_alias.clear();
                 }
 
                 let sw = sources_weak.clone();
@@ -285,6 +350,8 @@ async fn lcu_monitor_task(
                 s.auth_url.clear();
                 s.lol_dir.clear();
                 s.is_tencent = false;
+                s.current_champion_id = 0;
+                s.current_champion_alias.clear();
             }
         }
 
@@ -387,6 +454,11 @@ async fn lcu_monitor_task(
                                     // Session ended
                                     if current_champion_id != 0 {
                                         current_champion_id = 0;
+                                        {
+                                            let mut s = state.lock().unwrap();
+                                            s.current_champion_id = 0;
+                                            s.current_champion_alias.clear();
+                                        }
                                         let rw = runes_weak.clone();
                                         let _ = slint::invoke_from_event_loop(move || {
                                             if let Some(win) = rw.upgrade() {
@@ -406,6 +478,17 @@ async fn lcu_monitor_task(
                                 if cid != current_champion_id && cid > 0 {
                                     current_champion_id = cid;
                                     info!("champion id changed: {}", cid);
+
+                                    {
+                                        let mut s = state.lock().unwrap();
+                                        s.current_champion_id = cid;
+                                        s.current_champion_alias = s
+                                            .champions_map
+                                            .values()
+                                            .find(|c| c.key == cid.to_string())
+                                            .map(|c| c.id.clone())
+                                            .unwrap_or_default();
+                                    }
 
                                     // Update runes window
                                     let rw = runes_weak.clone();

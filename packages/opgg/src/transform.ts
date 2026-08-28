@@ -345,7 +345,7 @@ export function transformPageData(data: OpggPageData): LcuBuildSection {
     data.itemBuilds,
     data.champion,
     position,
-    undefined,
+    data.championId,
     data.mode,
   );
 
@@ -355,7 +355,7 @@ export function transformPageData(data: OpggPageData): LcuBuildSection {
 
   return {
     index: 0,
-    id: `opgg-${data.champion}-${idSuffix}`,
+    id: data.championId ? String(data.championId) : `opgg-${data.champion}-${idSuffix}`,
     version: data.version,
     officialVersion: data.officialVersion,
     pickCount: data.runePages[0]?.play ?? 0,

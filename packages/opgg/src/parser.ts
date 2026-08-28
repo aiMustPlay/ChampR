@@ -334,6 +334,7 @@ export interface OpggChampionInfo {
   key: string;    // URL slug, e.g. "leesin"
   name: string;   // Display name, e.g. "Lee Sin"
   tier: number;   // Tier integer 1-5
+  id: number;     // Riot champion id, e.g. 64
 }
 
 /**
@@ -366,14 +367,27 @@ export async function extractModeChampionList(page: Page): Promise<OpggChampionI
 
       if (!Array.isArray(champions) || champions.length === 0) continue;
       // Validate it looks like champion data
-      if (!champions[0].key || champions[0].tier === undefined) continue;
+      if (
+        !champions[0].key ||
+        champions[0].tier === undefined ||
+        typeof champions[0].id !== 'number'
+      ) {
+        continue;
+      }
 
       return champions
-        .filter((c) => c.key && c.name && typeof c.tier === 'number')
+        .filter(
+          (c) =>
+            c.key &&
+            c.name &&
+            typeof c.tier === 'number' &&
+            typeof c.id === 'number',
+        )
         .map((c) => ({
           key: c.key!,
           name: c.name!,
           tier: c.tier!,
+          id: c.id!,
         }));
     } catch {
       continue;
@@ -391,24 +405,49 @@ export async function extractModeChampionList(page: Page): Promise<OpggChampionI
  */
 export async function extractRankedChampionList(page: Page): Promise<OpggChampionInfo[]> {
   const chunks = await extractRscChunks(page);
+  const idMap = new Map<string, number>();
+  const tierMap = new Map<string, { name: string; tier: number }>();
 
   for (const chunk of chunks) {
-    // Look for "data":[ with positionName fields (distinguishes from other "data" arrays)
-    const idx = chunk.indexOf('"positionName"');
-    if (idx === -1) continue;
+    // Parse the compact id/name map first.
+    const dataIdx = chunk.indexOf('"type":"ranked","data":[');
+    if (dataIdx !== -1) {
+      const arrayStart = chunk.indexOf('[', dataIdx);
+      if (arrayStart !== -1) {
+        const jsonStr = extractBalancedJson(chunk, arrayStart);
+        if (jsonStr) {
+          try {
+            const data = JSON.parse(jsonStr) as Array<{
+              key?: string;
+              name?: string;
+              id?: number;
+            }>;
+            for (const entry of data) {
+              if (entry.key && typeof entry.id === 'number') {
+                idMap.set(entry.key, entry.id);
+              }
+            }
+          } catch {
+            // Ignore malformed candidates and continue with other chunks.
+          }
+        }
+      }
+    }
 
-    // Search backwards from positionName to find the containing "data":[ array
-    // Walk back to find "data":[
-    let searchStart = idx;
-    let dataIdx = -1;
+    // Parse the position tier data separately.
+    const posIdx = chunk.indexOf('"positionName"');
+    if (posIdx === -1) continue;
+
+    let searchStart = posIdx;
+    let positionDataIdx = -1;
     while (searchStart > 0) {
-      dataIdx = chunk.lastIndexOf('"data":[', searchStart);
-      if (dataIdx !== -1) break;
+      positionDataIdx = chunk.lastIndexOf('"data":[', searchStart);
+      if (positionDataIdx !== -1) break;
       searchStart -= 1000;
     }
-    if (dataIdx === -1) continue;
+    if (positionDataIdx === -1) continue;
 
-    const arrayStart = chunk.indexOf('[', dataIdx);
+    const arrayStart = chunk.indexOf('[', positionDataIdx);
     if (arrayStart === -1) continue;
 
     const jsonStr = extractBalancedJson(chunk, arrayStart);
@@ -425,9 +464,7 @@ export async function extractRankedChampionList(page: Page): Promise<OpggChampio
       if (!Array.isArray(data) || data.length === 0) continue;
       if (!data[0].key || !data[0].positionName) continue;
 
-      // Deduplicate by champion key, keeping the best (lowest) tier
-      const tierMap = new Map<string, { name: string; tier: number }>();
-
+      // Deduplicate by champion key, keeping the best (lowest) tier.
       for (const entry of data) {
         if (!entry.key || !entry.name) continue;
         const tier = entry.positionTierData?.tier ?? 5;
@@ -436,18 +473,25 @@ export async function extractRankedChampionList(page: Page): Promise<OpggChampio
           tierMap.set(entry.key, { name: entry.name, tier });
         }
       }
-
-      return Array.from(tierMap.entries()).map(([key, { name, tier }]) => ({
-        key,
-        name,
-        tier,
-      }));
     } catch {
       continue;
     }
   }
 
-  throw new Error('Failed to extract champion list from ranked tier list page RSC data');
+  const result = Array.from(tierMap.entries())
+    .filter(([key]) => idMap.has(key))
+    .map(([key, { name, tier }]) => ({
+      key,
+      name,
+      tier,
+      id: idMap.get(key)!,
+    }));
+
+  if (result.length === 0) {
+    throw new Error('Failed to extract champion list from ranked tier list page RSC data');
+  }
+
+  return result;
 }
 
 /**
