@@ -106,6 +106,8 @@ struct ChatCompletionChoice {
 #[derive(Debug, Deserialize)]
 struct ChatCompletionMessage {
     content: String,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +128,8 @@ struct StreamChoice {
 #[derive(Debug, Deserialize)]
 struct StreamDelta {
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
 }
 
 impl DeepSeekClient {
@@ -160,7 +164,7 @@ impl DeepSeekClient {
             model: self.config.model.clone(),
             messages,
             temperature: 0.7,
-            max_tokens: 1024,
+            max_tokens: 2048,
             stream: self.config.stream_enabled,
             thinking: self
                 .config
@@ -191,6 +195,7 @@ impl DeepSeekClient {
 
             let mut stream = response.bytes_stream();
             let mut content = String::new();
+            let mut reasoning_content = String::new();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.context("failed to read DeepSeek stream chunk")?;
                 let text = String::from_utf8_lossy(&chunk);
@@ -212,18 +217,28 @@ impl DeepSeekClient {
                             .choices
                             .into_iter()
                             .next()
-                            .and_then(|choice| choice.delta.content)
+                            .map(|choice| choice.delta)
                         {
-                            content.push_str(&delta);
+                            if let Some(delta_content) = delta.content {
+                                content.push_str(&delta_content);
+                            }
+                            if let Some(delta_reasoning) = delta.reasoning_content {
+                                reasoning_content.push_str(&delta_reasoning);
+                            }
                         }
                     }
                 }
             }
 
-            if content.is_empty() {
-                bail!("DeepSeek returned an empty stream response")
+            let final_content = if content.is_empty() {
+                reasoning_content
+            } else {
+                content
+            };
+            if final_content.is_empty() {
+                bail!("DeepSeek returned an empty stream response");
             }
-            return Ok(content);
+            return Ok(final_content);
         }
 
         let response = self
@@ -252,13 +267,21 @@ impl DeepSeekClient {
             bail!("DeepSeek API error: {}", error.message);
         }
 
-        parsed
+        let message = parsed
             .choices
             .into_iter()
             .next()
-            .map(|choice| choice.message.content)
-            .filter(|content| !content.is_empty())
-            .context("DeepSeek returned an empty response")
+            .map(|choice| choice.message)
+            .context("DeepSeek returned an empty response")?;
+        let final_content = if message.content.is_empty() {
+            message.reasoning_content.unwrap_or_default()
+        } else {
+            message.content
+        };
+        if final_content.is_empty() {
+            bail!("DeepSeek returned an empty response");
+        }
+        Ok(final_content)
     }
 }
 

@@ -18,7 +18,7 @@ export struct RuneModel {
 export component SourcesWindow inherits Window {
     title: "ChampR";
     preferred-width: 520px;
-    preferred-height: 720px;
+    preferred-height: 900px;
 
     in-out property <string> status: "loading";
     in-out property <string> lcu-status: "disconnected";
@@ -35,11 +35,16 @@ export component SourcesWindow inherits Window {
     in-out property <bool> apply-ok: false;
     in-out property <bool> launch-ok: false;
     in-out property <bool> llm-assistance-enabled: false;
+    in-out property <string> lmstudio-status: "unknown";
+    in-out property <string> coach-chat-log: "";
+    in-out property <string> coach-input: "";
+    in-out property <bool> coach-busy: false;
 
     callback apply-builds-clicked();
     callback launch-lol-clicked();
     callback open-tts-settings-clicked();
     callback llm-assistance-changed(bool);
+    callback coach-send-clicked();
 
     VerticalBox {
         padding: 16px;
@@ -172,6 +177,7 @@ export component SourcesWindow inherits Window {
                         }
                     }
                 }
+
             }
         }
 
@@ -190,15 +196,6 @@ export component SourcesWindow inherits Window {
                     text: "Actions";
                     font-size: 15px;
                     font-weight: 600;
-                }
-
-                CheckBox {
-                    text: "大师对局辅助";
-                    checked: root.llm-assistance-enabled;
-                    toggled => {
-                        root.llm-assistance-enabled = !root.llm-assistance-enabled;
-                        root.llm-assistance-changed(root.llm-assistance-enabled);
-                    }
                 }
 
                 Button {
@@ -228,6 +225,88 @@ export component SourcesWindow inherits Window {
                     clicked => {
                         root.open-tts-settings-clicked();
                     }
+                }
+            }
+        }
+
+        Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            horizontal-stretch: 1;
+
+            VerticalBox {
+                padding: 12px;
+                spacing: 8px;
+
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    height: 32px;
+
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.lmstudio-status == "connected" ? #22aa55
+                            : root.lmstudio-status == "unreachable" ? #d64545
+                            : #8a94a6;
+                    }
+                    Text {
+                        text: root.lmstudio-status == "connected" ? "LM Studio Online"
+                            : root.lmstudio-status == "unreachable" ? "LM Studio Offline"
+                            : "LM Studio Checking";
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        color: #666666;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 1px;
+                    }
+                    CheckBox {
+                        text: "大师对局辅助";
+                        checked: root.llm-assistance-enabled;
+                        toggled => {
+                            root.llm-assistance-enabled = !root.llm-assistance-enabled;
+                            root.llm-assistance-changed(root.llm-assistance-enabled);
+                        }
+                    }
+                }
+
+                TextEdit {
+                    text: root.coach-chat-log;
+                    read-only: true;
+                    height: 180px;
+                    horizontal-stretch: 1;
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+
+                    LineEdit {
+                        text: root.coach-input;
+                        placeholder-text: "Ask coach...";
+                        horizontal-stretch: 1;
+                        edited(text) => {
+                            root.coach-input = text;
+                        }
+                    }
+
+                    Button {
+                        text: "Send";
+                        enabled: !root.coach-busy && root.coach-input != "";
+                        clicked => {
+                            root.coach-send-clicked();
+                        }
+                    }
+                }
+
+                if root.coach-busy : Text {
+                    text: "Coach is thinking...";
+                    font-size: 12px;
+                    color: #888888;
                 }
             }
         }

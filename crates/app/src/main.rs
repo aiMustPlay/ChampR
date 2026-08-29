@@ -3,6 +3,7 @@
     windows_subsystem = "windows"
 )]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use lcu::{
     advisor,
     builds::Rune,
     cmd::{get_cmd_output, get_lcu_process_id},
-    deepseek::{DeepSeekClient, DeepSeekConfig},
+    deepseek::{ChatMessage, DeepSeekClient, DeepSeekConfig},
     lcu_api::{self, make_sub_msg},
     live_client,
     reqwest_websocket::Message,
@@ -59,6 +60,14 @@ struct AppState {
     ai_provider: String,
     /// LM Studio local OpenAI-compatible config.
     lmstudio_config: DeepSeekConfig,
+    /// Conversation history shared by automatic advice and the coach chat panel.
+    coach_messages: Vec<ChatMessage>,
+    /// Last successfully built match context, used as a fallback for follow-up questions.
+    coach_last_prompt: String,
+    /// Prevents overlapping coach chat requests.
+    coach_busy: bool,
+    /// Cached Data Dragon item names used to enrich the live-game prompt.
+    item_names: HashMap<String, String>,
 }
 
 impl Default for AppState {
@@ -91,6 +100,10 @@ impl Default for AppState {
                 reasoning_effort: String::new(),
                 stream_enabled: false,
             },
+            coach_messages: Vec::new(),
+            coach_last_prompt: String::new(),
+            coach_busy: false,
+            item_names: HashMap::new(),
         }
     }
 }
@@ -326,8 +339,77 @@ fn main() {
     });
 
     let llm_assistance_state = state.clone();
+    let llm_assistance_weak = sources_window.as_weak();
+    let llm_assistance_handle = rt_handle_ref.clone();
     sources_window.on_llm_assistance_changed(move |enabled| {
         llm_assistance_state.lock().unwrap().llm_assistance_enabled = enabled;
+        if enabled {
+            llm_assistance_handle.spawn(greet_coach(
+                llm_assistance_weak.clone(),
+                llm_assistance_state.clone(),
+            ));
+        }
+    });
+
+    let coach_weak = sources_window.as_weak();
+    let coach_state = state.clone();
+    let coach_handle = rt_handle_ref.clone();
+    sources_window.on_coach_send_clicked(move || {
+        let Some(win) = coach_weak.upgrade() else {
+            return;
+        };
+        let input = win.get_coach_input().to_string();
+        if input.trim().is_empty() {
+            return;
+        }
+
+        {
+            let mut s = coach_state.lock().unwrap();
+            if s.coach_busy {
+                return;
+            }
+            s.coach_busy = true;
+        }
+
+        win.set_coach_input(SharedString::from(""));
+
+        let weak = coach_weak.clone();
+        let state = coach_state.clone();
+        let weak_for_ui = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = weak_for_ui.upgrade() {
+                win.set_coach_busy(true);
+            }
+        });
+
+        coach_handle.spawn(async move {
+            let result = send_coach_message(&weak, &state, input).await;
+
+            {
+                let mut s = state.lock().unwrap();
+                s.coach_busy = false;
+            }
+
+            let weak2 = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak2.upgrade() {
+                    win.set_coach_busy(false);
+                }
+            });
+
+            if let Err(err) = result {
+                let weak3 = weak.clone();
+                let message = format!("System: Coach error: {err}");
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = weak3.upgrade() {
+                        let mut log = win.get_coach_chat_log().to_string();
+                        log.push_str(&message);
+                        log.push_str("\n\n");
+                        win.set_coach_chat_log(SharedString::from(&log));
+                    }
+                });
+            }
+        });
     });
 
     let tts_window_for_apply = tts_settings_window.as_weak();
@@ -510,6 +592,10 @@ fn main() {
     let sources_weak3 = sources_window.as_weak();
     let state_c3 = state.clone();
     rt_handle.spawn(lcu_monitor_task(sources_weak3, runes_weak2, state_c3));
+
+    let lmstudio_weak = sources_window.as_weak();
+    let lmstudio_state = state.clone();
+    rt_handle.spawn(lmstudio_health_loop(lmstudio_weak, lmstudio_state));
 
     // DeepSeek-based lineup advice loop.
     let advice_weak = sources_window.as_weak();
@@ -825,21 +911,285 @@ async fn lcu_monitor_task(
     }
 }
 
+fn trim_coach_messages(messages: &mut Vec<ChatMessage>, max_len: usize) {
+    if messages.len() > max_len {
+        let split_at = messages.len() - max_len;
+        *messages = messages.split_off(split_at);
+    }
+}
+
+fn render_coach_chat_log(messages: &[ChatMessage]) -> String {
+    let mut log = String::new();
+    for message in messages {
+        if message.role == "assistant" {
+            log.push_str("Coach: ");
+        } else if message.content.starts_with("LIVE MATCH STATE UPDATE\n") {
+            log.push_str("Match state: ");
+        } else {
+            log.push_str("You: ");
+        }
+
+        let content = message
+            .content
+            .strip_prefix("LIVE MATCH STATE UPDATE\n")
+            .unwrap_or(&message.content);
+        log.push_str(content);
+        log.push_str("\n\n");
+    }
+    log
+}
+
+fn refresh_coach_chat_log(weak: &Weak<SourcesWindow>, state: &SharedState) {
+    let log = {
+        let s = state.lock().unwrap();
+        render_coach_chat_log(&s.coach_messages)
+    };
+    let weak = weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(win) = weak.upgrade() {
+            win.set_coach_chat_log(SharedString::from(&log));
+        }
+    });
+}
+
+fn append_coach_message(
+    weak: &Weak<SourcesWindow>,
+    state: &SharedState,
+    role: &str,
+    content: &str,
+) {
+    {
+        let mut s = state.lock().unwrap();
+        s.coach_messages.push(ChatMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+        });
+        trim_coach_messages(&mut s.coach_messages, 24);
+    }
+    refresh_coach_chat_log(weak, state);
+}
+
+async fn build_current_coach_prompt(state: &SharedState) -> Option<String> {
+    let (auth_url, champions_map, item_names, local_champion_id, last_prompt) = {
+        let s = state.lock().unwrap();
+        (
+            s.auth_url.clone(),
+            s.champions_map.clone(),
+            s.item_names.clone(),
+            s.current_champion_id,
+            s.coach_last_prompt.clone(),
+        )
+    };
+
+    if auth_url.is_empty() {
+        return None;
+    }
+
+    let endpoint = format!("https://{auth_url}");
+    let mut live_data_available = false;
+    let live_prompt = match live_client::fetch_all_game_data().await {
+        Ok(game_data) => {
+            live_data_available = true;
+            match advisor::build_live_game_prompt(&game_data, &item_names) {
+                Ok(prompt) => Some(prompt),
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    };
+
+    let mut prompt = if let Some(prompt) = live_prompt {
+        prompt
+    } else {
+        match lcu_api::get_champ_select_session(&endpoint).await {
+            Ok(session) => match advisor::build_lineup_prompt(&session, &champions_map) {
+                Ok(prompt) => prompt,
+                Err(_) => last_prompt.clone(),
+            },
+            Err(_) => last_prompt.clone(),
+        }
+    };
+
+    if prompt.is_empty() {
+        return None;
+    }
+
+    if !live_data_available {
+        prompt = format!("当前无 Live Client Data，可能对局已结束或不在对局中\n\n{prompt}");
+    }
+
+    if local_champion_id > 0 {
+        if let Ok(sections) =
+            web::list_builds_by_id(&DEFAULT_SOURCE_VALUE.to_string(), local_champion_id).await
+        {
+            let build_titles = sections
+                .iter()
+                .flat_map(|section| section.item_builds.iter().map(|build| build.title.clone()))
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !build_titles.is_empty() {
+                prompt = format!("{prompt}\nCurrent champion recommended builds: {build_titles}");
+            }
+        }
+    }
+
+    {
+        let mut s = state.lock().unwrap();
+        s.coach_last_prompt = prompt.clone();
+    }
+
+    Some(prompt)
+}
+
+async fn send_coach_message(
+    weak: &Weak<SourcesWindow>,
+    state: &SharedState,
+    input: String,
+) -> anyhow::Result<String> {
+    let (auth_url, deepseek_config, lmstudio_config, ai_provider, history) = {
+        let s = state.lock().unwrap();
+        (
+            s.auth_url.clone(),
+            s.deepseek_config.clone(),
+            s.lmstudio_config.clone(),
+            s.ai_provider.clone(),
+            s.coach_messages.clone(),
+        )
+    };
+
+    if auth_url.is_empty() {
+        anyhow::bail!("League Client is not connected");
+    }
+
+    let llm_config = if ai_provider == "lmstudio" {
+        lmstudio_config
+    } else {
+        deepseek_config
+    };
+    if ai_provider != "lmstudio" && llm_config.api_key.is_empty() {
+        anyhow::bail!("DeepSeek API Key is not configured");
+    }
+
+    let client = DeepSeekClient::new(llm_config);
+    let context = build_current_coach_prompt(state).await;
+
+    let mut messages = vec![ChatMessage::system(advisor::DEFAULT_SYSTEM_PROMPT)];
+    messages.extend(history);
+    if let Some(context) = &context {
+        messages.push(ChatMessage::user(context.clone()));
+    }
+    messages.push(ChatMessage::user(input.clone()));
+
+    let advice = client.chat_messages(messages).await?;
+
+    if let Some(context) = context {
+        append_coach_message(
+            weak,
+            state,
+            "user",
+            &format!("LIVE MATCH STATE UPDATE\n{context}"),
+        );
+    }
+    append_coach_message(weak, state, "user", &input);
+    append_coach_message(weak, state, "assistant", &advice);
+
+    Ok(advice)
+}
+
+async fn greet_coach(weak: Weak<SourcesWindow>, state: SharedState) {
+    match send_coach_message(&weak, &state, "hi".to_string()).await {
+        Ok(reply) => {
+            let tts_config = {
+                let s = state.lock().unwrap();
+                s.tts_config.clone()
+            };
+            tokio::task::spawn_blocking(move || {
+                let _ = tts::speak_windows_tts_with_config(&reply, &tts_config);
+            });
+        }
+        Err(err) => {
+            let message = format!("System: Coach error: {err}");
+            let weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    let mut log = win.get_coach_chat_log().to_string();
+                    log.push_str(&message);
+                    log.push_str("\n\n");
+                    win.set_coach_chat_log(SharedString::from(&log));
+                }
+            });
+        }
+    }
+}
+
+fn lmstudio_models_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        format!("{trimmed}/models")
+    } else {
+        format!("{trimmed}/v1/models")
+    }
+}
+
+async fn lmstudio_health_status(base_url: &str) -> &'static str {
+    if base_url.trim().is_empty() {
+        return "unknown";
+    }
+
+    let url = lmstudio_models_url(base_url);
+    let client = match lcu::reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return "unreachable",
+    };
+
+    match client.get(&url).send().await {
+        Ok(response) if response.status().is_success() => "connected",
+        _ => "unreachable",
+    }
+}
+
+async fn lmstudio_health_loop(weak: Weak<SourcesWindow>, state: SharedState) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        interval.tick().await;
+        let base_url = {
+            let s = state.lock().unwrap();
+            s.lmstudio_config.base_url.clone()
+        };
+        let status = lmstudio_health_status(&base_url).await;
+
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = weak.upgrade() {
+                win.set_lmstudio_status(SharedString::from(status));
+            }
+        });
+    }
+}
+
 async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
     let item_names = web::fetch_item_names().await.unwrap_or_default();
+    {
+        let mut s = state.lock().unwrap();
+        s.item_names = item_names.clone();
+    }
 
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_prompt: Option<String> = None;
 
     loop {
         interval.tick().await;
 
-        let (auth_url, champions_map, deepseek_config, lmstudio_config, ai_provider) = {
+        let (auth_url, deepseek_config, lmstudio_config, ai_provider) = {
             let s = state.lock().unwrap();
             (
                 s.auth_url.clone(),
-                s.champions_map.clone(),
                 s.deepseek_config.clone(),
                 s.lmstudio_config.clone(),
                 s.ai_provider.clone(),
@@ -858,7 +1208,7 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
             continue;
         }
 
-        if deepseek_config.api_key.is_empty() {
+        if ai_provider != "lmstudio" && deepseek_config.api_key.is_empty() {
             let weak = sources_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = weak.upgrade() {
@@ -875,65 +1225,23 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
         };
         let client = DeepSeekClient::new(llm_config);
 
-        let endpoint = format!("https://{auth_url}");
-        let live_prompt = match live_client::fetch_all_game_data().await {
-            Ok(game_data) => match advisor::build_live_game_prompt(&game_data, &item_names) {
-                Ok(prompt) => {
-                    last_prompt = Some(prompt.clone());
-                    Some(prompt)
-                }
-                Err(_) => None,
-            },
-            Err(_) => None,
+        let Some(prompt) = build_current_coach_prompt(&state).await else {
+            continue;
         };
 
-        let mut prompt = if let Some(prompt) = live_prompt {
-            prompt
-        } else {
-            let session = lcu_api::get_champ_select_session(&endpoint).await;
-
-            match session {
-                Ok(session) => match advisor::build_lineup_prompt(&session, &champions_map) {
-                    Ok(prompt) => {
-                        last_prompt = Some(prompt.clone());
-                        prompt
-                    }
-                    Err(_) => match last_prompt.clone() {
-                        Some(prompt) => prompt,
-                        None => continue,
-                    },
-                },
-                Err(_) => match last_prompt.clone() {
-                    Some(prompt) => prompt,
-                    None => continue,
-                },
-            }
-        };
-
-        let local_champion_id = {
+        let history = {
             let s = state.lock().unwrap();
-            s.current_champion_id
+            s.coach_messages.clone()
         };
-        if local_champion_id > 0 {
-            if let Ok(sections) =
-                web::list_builds_by_id(&DEFAULT_SOURCE_VALUE.to_string(), local_champion_id).await
-            {
-                let build_titles = sections
-                    .iter()
-                    .flat_map(|section| section.item_builds.iter().map(|build| build.title.clone()))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                if !build_titles.is_empty() {
-                    prompt = format!("{prompt}\n当前英雄推荐装备方案: {build_titles}");
-                }
-            }
-        }
+        let context_message = format!("LIVE MATCH STATE UPDATE\n{prompt}");
+        let mut messages = vec![ChatMessage::system(advisor::DEFAULT_SYSTEM_PROMPT)];
+        messages.extend(history);
+        messages.push(ChatMessage::user(context_message.clone()));
 
-        match client
-            .chat(advisor::DEFAULT_SYSTEM_PROMPT, &prompt)
-            .await
-        {
+        match client.chat_messages(messages).await {
             Ok(advice) => {
+                append_coach_message(&sources_weak, &state, "user", &context_message);
+                append_coach_message(&sources_weak, &state, "assistant", &advice);
                 let tts_text = advice.clone();
                 let weak = sources_weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {

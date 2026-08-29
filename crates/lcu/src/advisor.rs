@@ -39,6 +39,33 @@ fn parse_team(team: Option<&Value>, champions: &ChampionsMap) -> Vec<String> {
         .collect()
 }
 
+fn format_game_time(seconds: f64) -> String {
+    let total = seconds.max(0.0) as u64;
+    format!("{:02}:{:02}", total / 60, total % 60)
+}
+
+fn live_game_status(game_data: &Value) -> &'static str {
+    let ended = game_data
+        .get("events")
+        .and_then(|events| events.get("Events"))
+        .and_then(Value::as_array)
+        .map(|events| {
+            events.iter().any(|event| {
+                event
+                    .get("EventName")
+                    .and_then(Value::as_str)
+                    == Some("GameEnd")
+            })
+        })
+        .unwrap_or(false);
+
+    if ended {
+        "ended"
+    } else {
+        "in-progress"
+    }
+}
+
 pub fn build_lineup_prompt(
     session: &Value,
     champions: &ChampionsMap,
@@ -74,7 +101,7 @@ pub fn build_lineup_prompt(
         .unwrap_or_else(|| "Unknown local player".to_string());
 
     Ok(format!(
-        "我方阵容:\n{}\n\n敌方阵容:\n{}\n\n本局玩家: {}\n\n请给出对线战斗技巧、装备思路，以及控龙/控虫策略。",
+        "阶段: 英雄选择\n我方阵容:\n{}\n\n敌方阵容:\n{}\n\n本局玩家: {}\n\n请给出对线战斗技巧、装备思路，以及控龙/控虫策略。",
         my_team.join("\n"),
         enemy_team.join("\n"),
         local_player
@@ -168,8 +195,31 @@ pub fn build_live_game_prompt(
         })
         .unwrap_or_else(|| active_summoner.to_string());
 
+    let game_meta = game_data.get("gameData");
+    let game_mode = game_meta
+        .and_then(|meta| meta.get("gameMode"))
+        .and_then(Value::as_str)
+        .unwrap_or("Unknown");
+    let game_time = game_meta
+        .and_then(|meta| meta.get("gameTime"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let map_name = game_meta
+        .and_then(|meta| meta.get("mapName"))
+        .and_then(Value::as_str)
+        .unwrap_or("Unknown");
+    let status = live_game_status(game_data);
+    let environment = format!(
+        "游戏环境: 模式={}, 时间={}, 地图={}, 状态={}",
+        game_mode,
+        format_game_time(game_time),
+        map_name,
+        status
+    );
+
     Ok(format!(
-        "我方实时阵容:\n{}\n\n敌方实时阵容:\n{}\n\n本局玩家: {}\n\n请结合实时等级和装备，给出对线战斗技巧、装备调整建议，以及控龙/控虫策略。",
+        "{}\n\n我方实时阵容:\n{}\n\n敌方实时阵容:\n{}\n\n本局玩家: {}\n\n请结合实时等级和装备，给出对线战斗技巧、装备调整建议，以及控龙/控虫策略。",
+        environment,
         order_team.join("\n"),
         chaos_team.join("\n"),
         local_player
