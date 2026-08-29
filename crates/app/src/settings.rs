@@ -31,6 +31,14 @@ pub struct Settings {
     pub deepseek_stream: bool,
     #[serde(default = "default_deepseek_reasoning_effort")]
     pub deepseek_reasoning_effort: String,
+    #[serde(default = "default_ai_provider")]
+    pub ai_provider: String,
+    #[serde(default = "default_lmstudio_base_url")]
+    pub lmstudio_base_url: String,
+    #[serde(default = "default_lmstudio_model")]
+    pub lmstudio_model: String,
+    #[serde(default)]
+    pub lmstudio_api_key: String,
 }
 
 fn default_tts_volume() -> i32 {
@@ -55,6 +63,18 @@ fn default_deepseek_model() -> String {
 
 fn default_deepseek_reasoning_effort() -> String {
     "high".to_string()
+}
+
+fn default_ai_provider() -> String {
+    "deepseek".to_string()
+}
+
+fn default_lmstudio_base_url() -> String {
+    "http://localhost:1234/v1".to_string()
+}
+
+fn default_lmstudio_model() -> String {
+    "local-model".to_string()
 }
 
 fn settings_path() -> PathBuf {

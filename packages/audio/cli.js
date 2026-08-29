@@ -6,10 +6,16 @@ const WindowsAudioPlayer = require('./windows-audio-player');
 function parseArgs(argv) {
   const args = argv.slice(2);
   const options = {};
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const next = args[i + 1];
+    if (arg === '--text') options.text = next;
     if (arg.startsWith('--text=')) options.text = arg.split('=')[1];
+    if (arg === '--voice') options.voice = next;
     if (arg.startsWith('--voice=')) options.voice = arg.split('=')[1];
+    if (arg === '--endpoint') options.endpoint = next;
     if (arg.startsWith('--endpoint=')) options.endpoint = arg.split('=')[1];
+    if (arg === '--volume') options.volume = Number(next);
     if (arg.startsWith('--volume=')) options.volume = Number(arg.split('=')[1]);
   }
   return options;

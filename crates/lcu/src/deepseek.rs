@@ -166,7 +166,11 @@ impl DeepSeekClient {
                 .config
                 .thinking_enabled
                 .then_some(Thinking { type_field: "enabled" }),
-            reasoning_effort: Some(self.config.reasoning_effort.clone()),
+            reasoning_effort: if self.config.reasoning_effort.is_empty() {
+                None
+            } else {
+                Some(self.config.reasoning_effort.clone())
+            },
         };
 
         if self.config.stream_enabled {

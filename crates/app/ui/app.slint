@@ -1,4 +1,4 @@
-import { VerticalBox, HorizontalBox, ListView, Button, SpinBox, LineEdit, TextEdit, CheckBox } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, ListView, Button, SpinBox, LineEdit, TextEdit, CheckBox, ComboBox } from "std-widgets.slint";
 
 export struct RuneModel {
     /// Display index (for identification in callbacks)
@@ -286,6 +286,10 @@ export component TtsSettingsWindow inherits Window {
     in-out property <bool> deepseek-thinking: false;
     in-out property <bool> deepseek-stream: false;
     in-out property <string> deepseek-reasoning-effort: "";
+    in-out property <string> ai-provider: "deepseek";
+    in-out property <string> lmstudio-base-url: "http://localhost:1234/v1";
+    in-out property <string> lmstudio-model: "local-model";
+    in-out property <string> lmstudio-api-key: "";
 
     callback apply-clicked();
     callback cancel-clicked();
@@ -372,24 +376,52 @@ export component TtsSettingsWindow inherits Window {
                 spacing: 10px;
                 Text { text: "DeepSeek"; font-size: 15px; font-weight: 600; }
                 HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "Provider"; width: 110px; vertical-alignment: center; }
+                    ComboBox {
+                        model: ["deepseek", "lmstudio"];
+                        current-value: root.ai-provider;
+                        selected(value) => {
+                            root.ai-provider = value;
+                        }
+                    }
+                }
+                if root.ai-provider == "deepseek" : VerticalBox {
+                    spacing: 10px;
+                    HorizontalBox { height: 40px; spacing: 12px;
                     Text { text: "API Key"; width: 110px; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-api-key; horizontal-stretch: 1; edited(text) => { root.deepseek-api-key = text; } }
-                }
-                HorizontalBox { height: 40px; spacing: 12px;
+                    }
+                    HorizontalBox { height: 40px; spacing: 12px;
                     Text { text: "Model"; width: 110px; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-model; horizontal-stretch: 1; edited(text) => { root.deepseek-model = text; } }
-                }
-                HorizontalBox { height: 32px; spacing: 12px;
+                    }
+                    HorizontalBox { height: 32px; spacing: 12px;
                     Text { text: "Thinking"; width: 110px; vertical-alignment: center; }
                     CheckBox { checked: root.deepseek-thinking; toggled => { root.deepseek-thinking = !root.deepseek-thinking; } }
-                }
-                HorizontalBox { height: 32px; spacing: 12px;
+                    }
+                    HorizontalBox { height: 32px; spacing: 12px;
                     Text { text: "Stream"; width: 110px; vertical-alignment: center; }
                     CheckBox { checked: root.deepseek-stream; toggled => { root.deepseek-stream = !root.deepseek-stream; } }
-                }
-                HorizontalBox { height: 40px; spacing: 12px;
+                    }
+                    HorizontalBox { height: 40px; spacing: 12px;
                     Text { text: "Reasoning"; width: 110px; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-reasoning-effort; horizontal-stretch: 1; edited(text) => { root.deepseek-reasoning-effort = text; } }
+                    }
+                }
+                if root.ai-provider == "lmstudio" : VerticalBox {
+                    spacing: 10px;
+                    HorizontalBox { height: 40px; spacing: 12px;
+                        Text { text: "Base URL"; width: 110px; vertical-alignment: center; }
+                        LineEdit { text: root.lmstudio-base-url; horizontal-stretch: 1; edited(text) => { root.lmstudio-base-url = text; } }
+                    }
+                    HorizontalBox { height: 40px; spacing: 12px;
+                        Text { text: "Model"; width: 110px; vertical-alignment: center; }
+                        LineEdit { text: root.lmstudio-model; horizontal-stretch: 1; edited(text) => { root.lmstudio-model = text; } }
+                    }
+                    HorizontalBox { height: 40px; spacing: 12px;
+                        Text { text: "API Key"; width: 110px; vertical-alignment: center; }
+                        LineEdit { text: root.lmstudio-api-key; horizontal-stretch: 1; edited(text) => { root.lmstudio-api-key = text; } }
+                    }
                 }
             }
         }

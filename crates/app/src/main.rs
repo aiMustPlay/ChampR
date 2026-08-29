@@ -55,6 +55,10 @@ struct AppState {
     deepseek_config: DeepSeekConfig,
     /// Whether LLM-based match assistance is enabled.
     llm_assistance_enabled: bool,
+    /// AI provider: "deepseek" or "lmstudio".
+    ai_provider: String,
+    /// LM Studio local OpenAI-compatible config.
+    lmstudio_config: DeepSeekConfig,
 }
 
 impl Default for AppState {
@@ -78,6 +82,15 @@ impl Default for AppState {
                 stream_enabled: false,
             },
             llm_assistance_enabled: false,
+            ai_provider: "deepseek".to_string(),
+            lmstudio_config: DeepSeekConfig {
+                api_key: String::new(),
+                base_url: "http://localhost:1234/v1".to_string(),
+                model: "local-model".to_string(),
+                thinking_enabled: false,
+                reasoning_effort: String::new(),
+                stream_enabled: false,
+            },
         }
     }
 }
@@ -116,6 +129,15 @@ fn main() {
         reasoning_effort: saved_settings.deepseek_reasoning_effort.clone(),
         stream_enabled: saved_settings.deepseek_stream,
     };
+    initial_state.ai_provider = saved_settings.ai_provider.clone();
+    initial_state.lmstudio_config = DeepSeekConfig {
+        api_key: saved_settings.lmstudio_api_key.clone(),
+        base_url: saved_settings.lmstudio_base_url.clone(),
+        model: saved_settings.lmstudio_model.clone(),
+        thinking_enabled: false,
+        reasoning_effort: String::new(),
+        stream_enabled: false,
+    };
     let state: SharedState = Arc::new(Mutex::new(initial_state));
 
     tts_settings_window.set_tts_rate(saved_settings.tts_rate);
@@ -129,6 +151,10 @@ fn main() {
     tts_settings_window.set_deepseek_reasoning_effort(SharedString::from(
         &saved_settings.deepseek_reasoning_effort,
     ));
+    tts_settings_window.set_ai_provider(SharedString::from(&saved_settings.ai_provider));
+    tts_settings_window.set_lmstudio_base_url(SharedString::from(&saved_settings.lmstudio_base_url));
+    tts_settings_window.set_lmstudio_model(SharedString::from(&saved_settings.lmstudio_model));
+    tts_settings_window.set_lmstudio_api_key(SharedString::from(&saved_settings.lmstudio_api_key));
 
     // -- Apply Builds button --
     let state_c = state.clone();
@@ -320,6 +346,10 @@ fn main() {
         let deepseek_thinking = win.get_deepseek_thinking();
         let deepseek_stream = win.get_deepseek_stream();
         let deepseek_reasoning_effort = win.get_deepseek_reasoning_effort().to_string();
+        let ai_provider = win.get_ai_provider().to_string();
+        let lmstudio_base_url = win.get_lmstudio_base_url().to_string();
+        let lmstudio_model = win.get_lmstudio_model().to_string();
+        let lmstudio_api_key = win.get_lmstudio_api_key().to_string();
 
         {
             let mut state = tts_state_for_apply.lock().unwrap();
@@ -337,6 +367,15 @@ fn main() {
                 reasoning_effort: deepseek_reasoning_effort.clone(),
                 stream_enabled: deepseek_stream,
             };
+            state.ai_provider = ai_provider.clone();
+            state.lmstudio_config = DeepSeekConfig {
+                api_key: lmstudio_api_key.clone(),
+                base_url: lmstudio_base_url.clone(),
+                model: lmstudio_model.clone(),
+                thinking_enabled: false,
+                reasoning_effort: String::new(),
+                stream_enabled: false,
+            };
         }
 
         let mut settings = settings::Settings::load();
@@ -349,6 +388,10 @@ fn main() {
         settings.deepseek_thinking = deepseek_thinking;
         settings.deepseek_stream = deepseek_stream;
         settings.deepseek_reasoning_effort = deepseek_reasoning_effort;
+        settings.ai_provider = ai_provider;
+        settings.lmstudio_base_url = lmstudio_base_url;
+        settings.lmstudio_model = lmstudio_model;
+        settings.lmstudio_api_key = lmstudio_api_key;
         settings.save();
 
         win.hide().unwrap();
@@ -792,12 +835,14 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
     loop {
         interval.tick().await;
 
-        let (auth_url, champions_map, deepseek_config) = {
+        let (auth_url, champions_map, deepseek_config, lmstudio_config, ai_provider) = {
             let s = state.lock().unwrap();
             (
                 s.auth_url.clone(),
                 s.champions_map.clone(),
                 s.deepseek_config.clone(),
+                s.lmstudio_config.clone(),
+                s.ai_provider.clone(),
             )
         };
 
@@ -823,7 +868,12 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
             continue;
         }
 
-        let client = DeepSeekClient::new(deepseek_config);
+        let llm_config = if ai_provider == "lmstudio" {
+            lmstudio_config
+        } else {
+            deepseek_config
+        };
+        let client = DeepSeekClient::new(llm_config);
 
         let endpoint = format!("https://{auth_url}");
         let live_prompt = match live_client::fetch_all_game_data().await {
