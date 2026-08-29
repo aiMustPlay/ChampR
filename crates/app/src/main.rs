@@ -398,6 +398,16 @@ fn main() {
         });
     });
 
+    let speech_settings_weak = tts_settings_window.as_weak();
+    tts_settings_window.on_open_speech_settings_clicked(move || {
+        let _ = std::process::Command::new("cmd.exe")
+            .args(["/C", "start", "ms-settings:speech"])
+            .spawn();
+        if let Some(win) = speech_settings_weak.upgrade() {
+            win.set_tts_test_status(SharedString::from("已打开 Windows 讲述人语音设置"));
+        }
+    });
+
     // -- Runes window: close --
     let runes_weak = runes_window.as_weak();
     runes_window.on_close_requested(move || {

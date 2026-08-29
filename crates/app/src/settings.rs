@@ -38,7 +38,7 @@ fn default_tts_volume() -> i32 {
 }
 
 fn default_tts_voice() -> String {
-    "Microsoft Huihui".to_string()
+    "zh-CN-XiaoxiaoNeural".to_string()
 }
 
 fn default_lol_launcher_path() -> String {

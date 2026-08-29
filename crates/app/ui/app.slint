@@ -276,7 +276,7 @@ export component TtsSettingsWindow inherits Window {
 
     in-out property <int> tts-rate: 0;
     in-out property <int> tts-volume: 100;
-    in-out property <string> tts-voice: "Microsoft Huihui";
+    in-out property <string> tts-voice: "zh-CN-XiaoxiaoNeural";
     in-out property <string> tts-test-text: "";
     in-out property <string> tts-test-status: "";
     in-out property <string> lol-launcher-path: "";
@@ -290,6 +290,7 @@ export component TtsSettingsWindow inherits Window {
     callback apply-clicked();
     callback cancel-clicked();
     callback test-tts-clicked();
+    callback open-speech-settings-clicked();
 
     VerticalBox {
         padding: 16px;
@@ -332,6 +333,13 @@ export component TtsSettingsWindow inherits Window {
                     text: root.tts-test-status;
                     font-size: 12px;
                     read-only: true;
+                }
+                Button {
+                    text: "打开语音设置";
+                    horizontal-stretch: 1;
+                    clicked => {
+                        root.open-speech-settings-clicked();
+                    }
                 }
             }
         }

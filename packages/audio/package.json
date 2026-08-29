@@ -1,0 +1,14 @@
+{
+  "name": "champr-audio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js audio sidecar for ChampR TTS playback",
+  "main": "audio-player.js",
+  "scripts": {
+    "speak": "node cli.js"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.0.7",
+    "ws": "^8.18.0"
+  }
+}

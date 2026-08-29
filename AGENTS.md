@@ -18,6 +18,7 @@ ChampR 是一个 Windows 英雄联盟助手：
 | `crates/lcu` | LCU、Live Client Data、DeepSeek、TTS 等核心库 |
 | `crates/server` | 本地 SQLite + Axum 后端 |
 | `packages/opgg` | OP.GG Playwright 爬虫 |
+| `packages/audio` | Node.js TTS sidecar，使用 msedge-tts 与 Windows MCI 播放 |
 | `scripts` | 数据导入脚本 |
 | `analysis_and_design` | 设计与架构文档 |
 | `run.ps1` | 一键启动脚本 |
@@ -54,7 +55,7 @@ ChampR 是一个 Windows 英雄联盟助手：
 - `deepseek.rs`
   - DeepSeek OpenAI 兼容客户端
 - `tts.rs`
-  - Windows SAPI TTS
+  - Windows TTS 调度：优先 Node sidecar，再回退旧实现
 - `web.rs`
   - Data Dragon、后端数据源
 
@@ -117,6 +118,18 @@ LCU / Live Client Data
   -> Windows TTS
 ```
 
+### TTS 播报
+
+```text
+Rust TTS
+  -> node packages/audio/cli.js
+  -> msedge-tts
+  -> zh-CN-XiaoxiaoNeural
+  -> MP3 Buffer
+  -> winmm.dll MCI
+  -> 静默播放
+```
+
 ## 当前已实现功能
 
 - OP.GG 最新数据抓取
@@ -143,10 +156,11 @@ LCU / Live Client Data
 1. `.cache/`、`packages/opgg/.cache/` 不应提交。
 2. `app.slint` 中的中文曾经出现过编码问题，修改时尽量用 ASCII 或确保 UTF-8。
 3. Windows 路径 `C:\WeGameApps\...` 作为腾讯客户端默认路径。
-4. `System.Speech` 需要系统已安装语音包；未安装时 TTS 会返回明确错误。
+4. TTS 优先使用 Node.js `packages/audio` sidecar，依赖 `msedge-tts`；安装依赖：`corepack pnpm --dir packages/audio install`。
 5. LoL 启动器需要管理员权限时，会通过 `Start-Process -Verb RunAs` 处理。
 6. 修改设置后应调用 `settings.save()`。
 7. DeepSeek 默认模型为 `deepseek-v4-flash`。
+8. Edge 神经语音默认使用 `zh-CN-XiaoxiaoNeural`，不要改回旧版 SAPI 语音。
 
 ## 提交规范
 
