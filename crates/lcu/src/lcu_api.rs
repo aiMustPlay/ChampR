@@ -18,7 +18,7 @@ lazy_static! {
         reqwest::Client::builder()
             .use_rustls_tls()
             .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(5))
             .no_proxy()
             .build()
             .unwrap()
@@ -70,6 +70,11 @@ pub async fn get_session(auth_url: &String) -> Result<Option<i64>, LcuError> {
     };
 
     Ok(None)
+}
+
+pub async fn get_champ_select_session(auth_url: &str) -> Result<Value, LcuError> {
+    let endpoint = format!("{auth_url}/lol-champ-select/v1/session");
+    make_get_request(&endpoint).await
 }
 
 pub async fn apply_rune(endpoint: String, rune: Rune) -> Result<(), LcuError> {

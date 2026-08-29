@@ -65,6 +65,16 @@ struct ChampionListResponse {
     data: ChampionsMap,
 }
 
+#[derive(Debug, Deserialize)]
+struct ItemListResponse {
+    data: HashMap<String, ItemInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemInfo {
+    name: String,
+}
+
 pub fn service_url() -> &'static str {
     SERVICE_URL.get_or_init(resolve_service_url).as_str()
 }
@@ -192,6 +202,28 @@ async fn fetch_champion_list_for_version(version: &str) -> Result<ChampionsMap, 
     }
 
     Err(FetchError::Failed)
+}
+
+async fn fetch_item_names_for_version(
+    version: &str,
+) -> Result<HashMap<String, String>, FetchError> {
+    let url = format!("{DATA_DRAGON_BASE_URL}/cdn/{version}/data/zh_CN/item.json");
+    if let Ok(resp) = reqwest::get(url).await {
+        if let Ok(data) = resp.json::<ItemListResponse>().await {
+            return Ok(data
+                .data
+                .into_iter()
+                .map(|(id, item)| (id, item.name))
+                .collect());
+        }
+    }
+
+    Err(FetchError::Failed)
+}
+
+pub async fn fetch_item_names() -> Result<HashMap<String, String>, FetchError> {
+    let version = fetch_latest_data_dragon_version().await?;
+    fetch_item_names_for_version(&version).await
 }
 
 pub async fn fetch_champion_list() -> Result<ChampionsMap, FetchError> {

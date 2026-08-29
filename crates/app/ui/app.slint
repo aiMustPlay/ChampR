@@ -1,4 +1,4 @@
-import { VerticalBox, HorizontalBox, ListView, Button } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, ListView, Button, SpinBox, LineEdit, TextEdit, CheckBox } from "std-widgets.slint";
 
 export struct RuneModel {
     /// Display index (for identification in callbacks)
@@ -17,149 +17,383 @@ export struct RuneModel {
 
 export component SourcesWindow inherits Window {
     title: "ChampR";
-    preferred-width: 500px;
-    preferred-height: 640px;
+    preferred-width: 520px;
+    preferred-height: 720px;
 
-    // --- properties ---
-    in-out property <string> status: "loading";          // "loading" | "success" | "error"
-    in-out property <string> lcu-status: "disconnected"; // "disconnected" | "authorizing" | "needs-admin" | "connected"
+    in-out property <string> status: "loading";
+    in-out property <string> lcu-status: "disconnected";
     in-out property <string> lcu-summoner: "";
     in-out property <bool> applying-builds: false;
     in-out property <string> launch-status: "";
     in-out property <bool> lol-running: false;
-    in-out property <string> apply-status: "";           // "", "Applying…", "Done! (N champions)", "Error: …"
+    in-out property <string> advice-text: "";
+    in-out property <string> apply-status: "";
+    in-out property <bool> show-lcu-details: false;
+    in-out property <bool> show-apply-details: false;
+    in-out property <bool> show-launch-details: false;
+    in-out property <bool> show-advice-details: false;
+    in-out property <bool> apply-ok: false;
+    in-out property <bool> launch-ok: false;
+    in-out property <bool> llm-assistance-enabled: false;
 
-    // --- callbacks ---
     callback apply-builds-clicked();
     callback launch-lol-clicked();
+    callback open-tts-settings-clicked();
+    callback llm-assistance-changed(bool);
 
     VerticalBox {
         padding: 16px;
         spacing: 12px;
 
-        // Header
-        Text {
-            text: "ChampR";
-            font-size: 28px;
-            font-weight: 700;
-            horizontal-alignment: center;
-        }
-        Text {
-            text: "Builds, runes, all in one";
-            font-size: 13px;
-            horizontal-alignment: center;
-            color: #888888;
-        }
+        Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            horizontal-stretch: 1;
 
-        // LCU connection status bar
-        HorizontalBox {
-            spacing: 8px;
-            alignment: center;
+            VerticalBox {
+                padding: 12px;
+                spacing: 10px;
 
-            Rectangle {
-                width: 10px;
-                height: 10px;
-                border-radius: 5px;
-                background: root.lcu-status == "connected" ? #22cc44 : #cc3333;
-            }
-            Text {
-                text: root.lcu-status == "connected"
-                    ? "League Client: " + root.lcu-summoner
-                    : root.lcu-status == "authorizing"
-                    ? "League Client detected. Requesting admin access..."
-                    : root.lcu-status == "needs-admin"
-                    ? "League Client detected. Admin access is required once to read LCU credentials."
-                    : "League Client not detected";
-                font-size: 13px;
-                color: root.lcu-status == "connected"
-                    ? #22cc44
-                    : root.lcu-status == "authorizing"
-                    ? #cc9a22
-                    : root.lcu-status == "needs-admin"
-                    ? #cc9a22
-                    : #cc3333;
-                vertical-alignment: center;
-            }
-        }
+                Text {
+                    text: "Status";
+                    font-size: 15px;
+                    font-weight: 600;
+                }
 
-        Text {
-            text: "Source: OP.GG";
-            font-size: 14px;
-            horizontal-alignment: center;
-            color: #666666;
-        }
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    height: 32px;
 
-        if root.status == "loading" : HorizontalBox {
-            alignment: center;
-            Text {
-                text: "Loading champion data…";
-                font-size: 14px;
-                color: #888888;
-            }
-        }
+                    Text {
+                        text: "LCU 🎮";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        width: 120px;
+                    }
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.lcu-status == "connected" ? #22aa55 : #d64545;
+                    }
+                    Button {
+                        text: root.lcu-status == "connected" ? "ℹ️" : "❗";
+                        width: 28px;
+                        height: 28px;
+                        clicked => {
+                            root.show-lcu-details = !root.show-lcu-details;
+                        }
+                    }
+                }
 
-        if root.status == "error" : Text {
-            text: "Failed to load champion data. Check your network.";
-            font-size: 14px;
-            horizontal-alignment: center;
-            color: #cc3333;
-        }
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    height: 32px;
 
-        // Apply Builds button + status
-        HorizontalBox {
-            alignment: center;
-            spacing: 12px;
+                    Text {
+                        text: "LoL 🚀";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        width: 120px;
+                    }
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.launch-ok ? #22aa55 : (root.launch-status != "" ? #d64545 : #8a94a6);
+                    }
+                    Button {
+                        text: root.launch-ok ? "ℹ️" : "❗";
+                        width: 28px;
+                        height: 28px;
+                        enabled: root.launch-status != "";
+                        clicked => {
+                            root.show-launch-details = !root.show-launch-details;
+                        }
+                    }
+                }
 
-            Button {
-                text: root.applying-builds ? "Applying…" : "Apply Builds";
-                enabled: !root.applying-builds && root.lcu-status == "connected";
-                clicked => {
-                    root.apply-builds-clicked();
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    height: 32px;
+
+                    Text {
+                        text: "Builds 🛠️";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        width: 120px;
+                    }
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.apply-ok ? #22aa55 : (root.apply-status != "" ? #d64545 : #8a94a6);
+                    }
+                    Button {
+                        text: root.apply-ok ? "ℹ️" : "❗";
+                        width: 28px;
+                        height: 28px;
+                        enabled: root.apply-status != "";
+                        clicked => {
+                            root.show-apply-details = !root.show-apply-details;
+                        }
+                    }
+                }
+
+                HorizontalBox {
+                    spacing: 8px;
+                    alignment: center;
+                    height: 32px;
+
+                    Text {
+                        text: "Advice 🧠";
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        width: 120px;
+                    }
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        border-radius: 4px;
+                        background: root.advice-text != "" ? #22aa55 : #8a94a6;
+                    }
+                    Button {
+                        text: "ℹ️";
+                        width: 28px;
+                        height: 28px;
+                        enabled: root.advice-text != "";
+                        clicked => {
+                            root.show-advice-details = !root.show-advice-details;
+                        }
+                    }
                 }
             }
         }
 
-        if root.apply-status != "" : Text {
-            text: root.apply-status;
-            font-size: 13px;
-            horizontal-alignment: center;
-            color: #666666;
-        }
+        Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            horizontal-stretch: 1;
 
-        // Launch LoL client button + status
-        HorizontalBox {
-            alignment: center;
-            spacing: 12px;
+            VerticalBox {
+                padding: 12px;
+                spacing: 10px;
 
-            Rectangle {
-                width: 10px;
-                height: 10px;
-                border-radius: 5px;
-                background: root.lol-running ? #22cc44 : #999999;
-            }
+                Text {
+                    text: "Actions";
+                    font-size: 15px;
+                    font-weight: 600;
+                }
 
-            Button {
-                text: root.lol-running ? "LoL Running" : "Launch LoL";
-                enabled: !root.lol-running;
-                clicked => {
-                    root.launch-lol-clicked();
+                CheckBox {
+                    text: "大师对局辅助";
+                    checked: root.llm-assistance-enabled;
+                    toggled => {
+                        root.llm-assistance-enabled = !root.llm-assistance-enabled;
+                        root.llm-assistance-changed(root.llm-assistance-enabled);
+                    }
+                }
+
+                Button {
+                    text: "🚀 启动 LoL";
+                    height: 36px;
+                    horizontal-stretch: 1;
+                    enabled: !root.lol-running;
+                    clicked => {
+                        root.launch-lol-clicked();
+                    }
+                }
+
+                Button {
+                    text: "🛠 Apply Builds";
+                    height: 36px;
+                    horizontal-stretch: 1;
+                    enabled: !root.applying-builds && root.lcu-status == "connected";
+                    clicked => {
+                        root.apply-builds-clicked();
+                    }
+                }
+
+                Button {
+                    text: "🎛 Settings";
+                    height: 36px;
+                    horizontal-stretch: 1;
+                    clicked => {
+                        root.open-tts-settings-clicked();
+                    }
                 }
             }
         }
 
-        if root.launch-status != "" : Text {
+        Text {
+            text: "Details";
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        if root.show-lcu-details : TextEdit {
+            text: root.lcu-status == "connected"
+                ? "League Client: " + root.lcu-summoner
+                : root.lcu-status == "authorizing"
+                ? "League Client detected. Requesting admin access..."
+                : root.lcu-status == "needs-admin"
+                ? "League Client detected. Admin access is required once to read LCU credentials."
+                : "League Client not detected";
+            font-size: 12px;
+            read-only: true;
+        }
+
+        if root.show-launch-details && root.launch-status != "" : TextEdit {
             text: root.launch-status;
-            font-size: 13px;
-            horizontal-alignment: center;
-            color: #666666;
+            font-size: 12px;
+            read-only: true;
+        }
+
+        if root.show-apply-details && root.apply-status != "" : TextEdit {
+            text: root.apply-status;
+            font-size: 12px;
+            read-only: true;
+        }
+
+        if root.show-advice-details && root.advice-text != "" : TextEdit {
+            text: root.advice-text;
+            font-size: 12px;
+            read-only: true;
         }
     }
 }
+export component TtsSettingsWindow inherits Window {
+    title: "Settings";
+    preferred-width: 480px;
+    preferred-height: 760px;
 
-// ---------------------------------------------------------------------------
-//  RunesWindow – champion runes overlay with source picker + apply buttons
-// ---------------------------------------------------------------------------
+    in-out property <int> tts-rate: 0;
+    in-out property <int> tts-volume: 100;
+    in-out property <string> tts-voice: "Microsoft Huihui";
+    in-out property <string> tts-test-text: "";
+    in-out property <string> tts-test-status: "";
+    in-out property <string> lol-launcher-path: "";
+    in-out property <string> deepseek-api-key: "";
+    in-out property <string> deepseek-base-url: "";
+    in-out property <string> deepseek-model: "";
+    in-out property <bool> deepseek-thinking: false;
+    in-out property <bool> deepseek-stream: false;
+    in-out property <string> deepseek-reasoning-effort: "";
 
+    callback apply-clicked();
+    callback cancel-clicked();
+    callback test-tts-clicked();
+
+    VerticalBox {
+        padding: 16px;
+        spacing: 12px;
+
+        Text {
+            text: "Settings";
+            font-size: 22px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+
+        Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            horizontal-stretch: 1;
+            VerticalBox {
+                padding: 12px;
+                spacing: 10px;
+                Text { text: "TTS"; font-size: 15px; font-weight: 600; }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "Rate"; width: 110px; vertical-alignment: center; }
+                    SpinBox { minimum: -10; maximum: 10; value: root.tts-rate; horizontal-stretch: 1; edited(value) => { root.tts-rate = value; } }
+                }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "Volume"; width: 110px; vertical-alignment: center; }
+                    SpinBox { minimum: 0; maximum: 100; value: root.tts-volume; horizontal-stretch: 1; edited(value) => { root.tts-volume = value; } }
+                }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "Voice"; width: 110px; vertical-alignment: center; }
+                    LineEdit { text: root.tts-voice; horizontal-stretch: 1; edited(text) => { root.tts-voice = text; } }
+                }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    LineEdit { text: root.tts-test-text; placeholder-text: "输入测试文字"; horizontal-stretch: 1; edited(text) => { root.tts-test-text = text; } }
+                    Button { text: "🔊 Test"; clicked => { root.test-tts-clicked(); } }
+                }
+                if root.tts-test-status != "" : TextEdit {
+                    text: root.tts-test-status;
+                    font-size: 12px;
+                    read-only: true;
+                }
+            }
+        }
+
+        Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            horizontal-stretch: 1;
+            VerticalBox {
+                padding: 12px;
+                spacing: 10px;
+                Text { text: "LoL"; font-size: 15px; font-weight: 600; }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "Launcher"; width: 110px; vertical-alignment: center; }
+                    LineEdit { text: root.lol-launcher-path; horizontal-stretch: 1; edited(text) => { root.lol-launcher-path = text; } }
+                }
+            }
+        }
+
+        Rectangle {
+            background: #ffffff;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            horizontal-stretch: 1;
+            VerticalBox {
+                padding: 12px;
+                spacing: 10px;
+                Text { text: "DeepSeek"; font-size: 15px; font-weight: 600; }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "API Key"; width: 110px; vertical-alignment: center; }
+                    LineEdit { text: root.deepseek-api-key; horizontal-stretch: 1; edited(text) => { root.deepseek-api-key = text; } }
+                }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "Model"; width: 110px; vertical-alignment: center; }
+                    LineEdit { text: root.deepseek-model; horizontal-stretch: 1; edited(text) => { root.deepseek-model = text; } }
+                }
+                HorizontalBox { height: 32px; spacing: 12px;
+                    Text { text: "Thinking"; width: 110px; vertical-alignment: center; }
+                    CheckBox { checked: root.deepseek-thinking; toggled => { root.deepseek-thinking = !root.deepseek-thinking; } }
+                }
+                HorizontalBox { height: 32px; spacing: 12px;
+                    Text { text: "Stream"; width: 110px; vertical-alignment: center; }
+                    CheckBox { checked: root.deepseek-stream; toggled => { root.deepseek-stream = !root.deepseek-stream; } }
+                }
+                HorizontalBox { height: 40px; spacing: 12px;
+                    Text { text: "Reasoning"; width: 110px; vertical-alignment: center; }
+                    LineEdit { text: root.deepseek-reasoning-effort; horizontal-stretch: 1; edited(text) => { root.deepseek-reasoning-effort = text; } }
+                }
+            }
+        }
+
+        HorizontalBox {
+            alignment: end;
+            spacing: 12px;
+            Button { text: "Cancel"; clicked => { root.cancel-clicked(); } }
+            Button { text: "Apply"; clicked => { root.apply-clicked(); } }
+        }
+    }
+}
 export component RunesWindow inherits Window {
     title: "Runes";
     preferred-width: 500px;
@@ -195,10 +429,10 @@ export component RunesWindow inherits Window {
 
             VerticalBox {
                 alignment: center;
-                Text {
+                TextEdit {
                     text: root.champion-name != "" ? root.champion-name : "Champion " + root.champion-id;
                     font-size: 22px;
-                    font-weight: 600;
+                    read-only: true;
                 }
             }
         }

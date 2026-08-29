@@ -13,7 +13,7 @@ const DIR_KEY: &str = "--install-directory=";
 #[allow(dead_code)]
 const LCU_COMMAND: &str = "Get-CimInstance Win32_Process -Filter \"name = 'LeagueClientUx.exe'\" | Select-Object -ExpandProperty CommandLine";
 #[cfg(target_os = "windows")]
-const LCU_PROCESS_ID_COMMAND: &str = "Get-Process LeagueClientUx -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id";
+const LCU_PROCESS_ID_COMMAND: &str = "$p = Get-Process LeagueClientUx -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id; if ($null -ne $p) { Write-Output $p }; exit 0";
 
 lazy_static! {
     static ref PORT_REGEXP: regex::Regex = regex::Regex::new(r"--app-port=\d+").unwrap();
@@ -193,7 +193,21 @@ pub fn get_lcu_process_id() -> Option<u32> {
 
 #[cfg(target_os = "windows")]
 pub fn locate_lol_client() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    let tencent_candidates = [
+        r"C:\WeGameApps\英雄联盟（含经典模式）\WeGameLauncher\launcher.exe",
+        r"C:\wegameapps\英雄联盟（含经典模式）\Launcher\Client.exe",
+        r"C:\wegameapps\英雄联盟（含经典模式）\TCLS\client.exe",
+        r"C:\wegameapps\英雄联盟（含经典模式）\LeagueClient\LeagueClient.exe",
+    ];
+    if let Some(path) = tencent_candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+    {
+        return Some(path);
+    }
 
     let candidates = [
         r"C:\Riot Games\Riot Client\RiotClientServices.exe",
@@ -202,6 +216,9 @@ pub fn locate_lol_client() -> Option<std::path::PathBuf> {
         r"C:\Riot Games\League of Legends\LeagueClient.exe",
         r"C:\Program Files\Riot Games\League of Legends\LeagueClient.exe",
         r"C:\Program Files (x86)\Riot Games\League of Legends\LeagueClient.exe",
+        r"C:\wegameapps\英雄联盟（含经典模式）\Riot Client\RiotClientServices.exe",
+        r"C:\wegameapps\英雄联盟（含经典模式）\Launcher\Client.exe",
+        r"C:\wegameapps\英雄联盟（含经典模式）\LeagueClient\LeagueClient.exe",
     ];
 
     if let Some(path) = candidates
@@ -212,15 +229,42 @@ pub fn locate_lol_client() -> Option<std::path::PathBuf> {
         return Some(path);
     }
 
+    let search_roots = [
+        r"C:\wegameapps",
+        r"C:\Program Files (x86)\wegameapps",
+        r"C:\Program Files\wegameapps",
+        r"C:\Riot Games",
+        r"C:\Program Files\Riot Games",
+        r"C:\Program Files (x86)\Riot Games",
+    ];
+
+    for target in ["RiotClientServices.exe", "LeagueClient.exe", "Client.exe"] {
+        for root in search_roots {
+            if let Some(path) = find_executable_in_dir(Path::new(root), target, 4) {
+                return Some(path);
+            }
+        }
+    }
+
     if let Ok(output) = get_cmd_output() {
         let install_dir = PathBuf::from(&output.dir);
-        let dynamic_candidates = [
-            install_dir.join("Riot Client").join("RiotClientServices.exe"),
-            install_dir.join("Launcher").join("Client.exe"),
-            install_dir.join("LeagueClient").join("LeagueClient.exe"),
-            install_dir.join("TCLS").join("client.exe"),
-            install_dir.join("LeagueClient.exe"),
-        ];
+        let dynamic_candidates = if output.is_tencent {
+            vec![
+                install_dir.join("Launcher").join("Client.exe"),
+                install_dir.join("TCLS").join("client.exe"),
+                install_dir.join("LeagueClient").join("LeagueClient.exe"),
+                install_dir.join("Riot Client").join("RiotClientServices.exe"),
+                install_dir.join("LeagueClient.exe"),
+            ]
+        } else {
+            vec![
+                install_dir.join("Riot Client").join("RiotClientServices.exe"),
+                install_dir.join("Launcher").join("Client.exe"),
+                install_dir.join("LeagueClient").join("LeagueClient.exe"),
+                install_dir.join("TCLS").join("client.exe"),
+                install_dir.join("LeagueClient.exe"),
+            ]
+        };
 
         return dynamic_candidates
             .into_iter()
@@ -231,17 +275,95 @@ pub fn locate_lol_client() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-pub fn launch_lol_client() -> Result<std::path::PathBuf, String> {
+fn find_executable_in_dir(
+    root: &std::path::Path,
+    target: &str,
+    depth: u32,
+) -> Option<std::path::PathBuf> {
+    use std::fs;
+
+    if depth == 0 {
+        return None;
+    }
+
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_executable_in_dir(&path, target, depth - 1) {
+                return Some(found);
+            }
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.eq_ignore_ascii_case(target))
+            .unwrap_or(false)
+        {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_lol_process(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
 
+    match Command::new(path).spawn() {
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(err) if err.raw_os_error() == Some(740) => {
+            let script = format!(
+                "Start-Process -FilePath '{}' -Verb RunAs",
+                path.to_string_lossy().replace('\'', "''")
+            );
+            let output = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &script,
+                ])
+                .creation_flags(0x08000000)
+                .output()
+                .map_err(|err| format!("Failed to elevate LoL launcher: {err}"))?;
+
+            if output.status.success() {
+                Ok(path.to_path_buf())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Err(format!("Failed to elevate LoL launcher: {stderr}"))
+            }
+        }
+        Err(err) => Err(format!("Failed to launch {}: {err}", path.display())),
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn launch_lol_client() -> Result<std::path::PathBuf, String> {
     let path = locate_lol_client()
         .ok_or_else(|| "Could not locate League of Legends client".to_string())?;
 
-    Command::new(&path)
-        .spawn()
-        .map_err(|err| format!("Failed to launch {}: {err}", path.display()))?;
+    spawn_lol_process(&path)
+}
 
-    Ok(path)
+#[cfg(target_os = "windows")]
+pub fn launch_lol_client_with_path(
+    preferred_path: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+
+    if let Some(preferred_path) = preferred_path {
+        let path = PathBuf::from(preferred_path);
+        if path.is_file() {
+            return spawn_lol_process(&path);
+        }
+    }
+
+    launch_lol_client()
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -251,6 +373,13 @@ pub fn locate_lol_client() -> Option<std::path::PathBuf> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn launch_lol_client() -> Result<std::path::PathBuf, String> {
+    Err("Launching LoL is currently supported on Windows only".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn launch_lol_client_with_path(
+    _preferred_path: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
     Err("Launching LoL is currently supported on Windows only".to_string())
 }
 

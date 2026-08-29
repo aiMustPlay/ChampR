@@ -11,15 +11,20 @@ use kv_log_macro::{info, warn};
 use slint::{ComponentHandle, Image, ModelRc, SharedPixelBuffer, SharedString, VecModel, Weak};
 
 use lcu::{
+    advisor,
     builds::Rune,
     cmd::{get_cmd_output, get_lcu_process_id},
+    deepseek::{DeepSeekClient, DeepSeekConfig},
     lcu_api::{self, make_sub_msg},
+    live_client,
     reqwest_websocket::Message,
     serde_json::{from_str, Value},
+    tts,
     web::{self, ChampionsMap},
 };
 
 slint::include_modules!();
+mod settings;
 
 #[allow(dead_code)]
 const DEFAULT_SOURCE_LABEL: &str = "OP.GG";
@@ -42,6 +47,14 @@ struct AppState {
     current_champion_id: i64,
     /// Data Dragon champion id used as the backend alias (e.g. "Aatrox").
     current_champion_alias: String,
+    /// TTS voice configuration used by the advice loop.
+    tts_config: tts::TtsConfig,
+    /// User-configurable LoL launcher path.
+    lol_launcher_path: String,
+    /// DeepSeek configuration used by the advice loop.
+    deepseek_config: DeepSeekConfig,
+    /// Whether LLM-based match assistance is enabled.
+    llm_assistance_enabled: bool,
 }
 
 impl Default for AppState {
@@ -54,6 +67,17 @@ impl Default for AppState {
             current_runes: Vec::new(),
             current_champion_id: 0,
             current_champion_alias: String::new(),
+            tts_config: tts::TtsConfig::default(),
+            lol_launcher_path: r"C:\WeGameApps\英雄联盟（含经典模式）\WeGameLauncher\launcher.exe".to_string(),
+            deepseek_config: DeepSeekConfig {
+                api_key: String::new(),
+                base_url: "https://api.deepseek.com".to_string(),
+                model: "deepseek-v4-flash".to_string(),
+                thinking_enabled: false,
+                reasoning_effort: "high".to_string(),
+                stream_enabled: false,
+            },
+            llm_assistance_enabled: false,
         }
     }
 }
@@ -70,8 +94,41 @@ fn main() {
     // -- Create windows --
     let sources_window = SourcesWindow::new().unwrap();
     let runes_window = RunesWindow::new().unwrap();
+    let tts_settings_window = TtsSettingsWindow::new().unwrap();
 
-    let state: SharedState = Arc::new(Mutex::new(AppState::default()));
+    let saved_settings = settings::Settings::load();
+    let mut initial_state = AppState::default();
+    initial_state.tts_config = tts::TtsConfig {
+        rate: saved_settings.tts_rate,
+        volume: saved_settings.tts_volume,
+        voice: if saved_settings.tts_voice.is_empty() {
+            None
+        } else {
+            Some(saved_settings.tts_voice.clone())
+        },
+    };
+    initial_state.lol_launcher_path = saved_settings.lol_launcher_path.clone();
+    initial_state.deepseek_config = DeepSeekConfig {
+        api_key: saved_settings.deepseek_api_key.clone(),
+        base_url: saved_settings.deepseek_base_url.clone(),
+        model: saved_settings.deepseek_model.clone(),
+        thinking_enabled: saved_settings.deepseek_thinking,
+        reasoning_effort: saved_settings.deepseek_reasoning_effort.clone(),
+        stream_enabled: saved_settings.deepseek_stream,
+    };
+    let state: SharedState = Arc::new(Mutex::new(initial_state));
+
+    tts_settings_window.set_tts_rate(saved_settings.tts_rate);
+    tts_settings_window.set_tts_volume(saved_settings.tts_volume);
+    tts_settings_window.set_tts_voice(SharedString::from(&saved_settings.tts_voice));
+    tts_settings_window.set_lol_launcher_path(SharedString::from(&saved_settings.lol_launcher_path));
+    tts_settings_window.set_deepseek_api_key(SharedString::from(&saved_settings.deepseek_api_key));
+    tts_settings_window.set_deepseek_model(SharedString::from(&saved_settings.deepseek_model));
+    tts_settings_window.set_deepseek_thinking(saved_settings.deepseek_thinking);
+    tts_settings_window.set_deepseek_stream(saved_settings.deepseek_stream);
+    tts_settings_window.set_deepseek_reasoning_effort(SharedString::from(
+        &saved_settings.deepseek_reasoning_effort,
+    ));
 
     // -- Apply Builds button --
     let state_c = state.clone();
@@ -179,6 +236,7 @@ fn main() {
                     result.as_ref().err()
                 );
 
+                let apply_ok = result.is_ok();
                 let msg = match result {
                     Ok(()) => format!("Done! Applied builds for {}", champion_label),
                     Err(_) => format!("Error applying builds for {}", champion_label),
@@ -187,6 +245,7 @@ fn main() {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(win) = weak2.upgrade() {
                         win.set_applying_builds(false);
+                        win.set_apply_ok(apply_ok);
                         win.set_apply_status(SharedString::from(&msg));
                     }
                 });
@@ -196,11 +255,13 @@ fn main() {
 
     // -- Launch LoL client --
     let launch_weak = sources_weak.clone();
+    let launch_state = state.clone();
     sources_window.on_launch_lol_clicked(move || {
         if lcu::cmd::check_if_lol_running() {
             let w = launch_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = w.upgrade() {
+                    win.set_launch_ok(true);
                     win.set_launch_status(SharedString::from("LoL 客户端已在运行"));
                 }
             });
@@ -208,7 +269,16 @@ fn main() {
         }
 
         let w = launch_weak.clone();
-        let result = lcu::cmd::launch_lol_client();
+        let preferred_path = {
+            let s = launch_state.lock().unwrap();
+            s.lol_launcher_path.clone()
+        };
+        let result = if preferred_path.trim().is_empty() {
+            lcu::cmd::launch_lol_client()
+        } else {
+            lcu::cmd::launch_lol_client_with_path(Some(preferred_path.as_str()))
+        };
+        let launch_ok = result.is_ok();
         let msg = match result {
             Ok(path) => format!("LoL 客户端已启动: {}", path.display()),
             Err(err) => format!("无法启动 LoL 客户端: {err}"),
@@ -216,8 +286,115 @@ fn main() {
 
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = w.upgrade() {
+                win.set_launch_ok(launch_ok);
                 win.set_launch_status(SharedString::from(&msg));
             }
+        });
+    });
+
+    let tts_window_for_open = tts_settings_window.as_weak();
+    sources_window.on_open_tts_settings_clicked(move || {
+        if let Some(win) = tts_window_for_open.upgrade() {
+            win.show().unwrap();
+        }
+    });
+
+    let llm_assistance_state = state.clone();
+    sources_window.on_llm_assistance_changed(move |enabled| {
+        llm_assistance_state.lock().unwrap().llm_assistance_enabled = enabled;
+    });
+
+    let tts_window_for_apply = tts_settings_window.as_weak();
+    let tts_state_for_apply = state.clone();
+    tts_settings_window.on_apply_clicked(move || {
+        let Some(win) = tts_window_for_apply.upgrade() else {
+            return;
+        };
+
+        let rate = win.get_tts_rate();
+        let volume = win.get_tts_volume();
+        let voice = win.get_tts_voice().to_string();
+        let launcher_path = win.get_lol_launcher_path().to_string();
+        let deepseek_api_key = win.get_deepseek_api_key().to_string();
+        let deepseek_model = win.get_deepseek_model().to_string();
+        let deepseek_thinking = win.get_deepseek_thinking();
+        let deepseek_stream = win.get_deepseek_stream();
+        let deepseek_reasoning_effort = win.get_deepseek_reasoning_effort().to_string();
+
+        {
+            let mut state = tts_state_for_apply.lock().unwrap();
+            state.tts_config = tts::TtsConfig {
+                rate,
+                volume,
+                voice: if voice.is_empty() { None } else { Some(voice.clone()) },
+            };
+            state.lol_launcher_path = launcher_path.clone();
+            state.deepseek_config = DeepSeekConfig {
+                api_key: deepseek_api_key.clone(),
+                base_url: "https://api.deepseek.com".to_string(),
+                model: deepseek_model.clone(),
+                thinking_enabled: deepseek_thinking,
+                reasoning_effort: deepseek_reasoning_effort.clone(),
+                stream_enabled: deepseek_stream,
+            };
+        }
+
+        let mut settings = settings::Settings::load();
+        settings.tts_rate = rate;
+        settings.tts_volume = volume;
+        settings.tts_voice = voice;
+        settings.lol_launcher_path = launcher_path;
+        settings.deepseek_api_key = deepseek_api_key;
+        settings.deepseek_model = deepseek_model;
+        settings.deepseek_thinking = deepseek_thinking;
+        settings.deepseek_stream = deepseek_stream;
+        settings.deepseek_reasoning_effort = deepseek_reasoning_effort;
+        settings.save();
+
+        win.hide().unwrap();
+    });
+
+    let tts_window_for_cancel = tts_settings_window.as_weak();
+    tts_settings_window.on_cancel_clicked(move || {
+        if let Some(win) = tts_window_for_cancel.upgrade() {
+            win.hide().unwrap();
+        }
+    });
+
+    let tts_window_for_test = tts_settings_window.as_weak();
+    tts_settings_window.on_test_tts_clicked(move || {
+        let Some(win) = tts_window_for_test.upgrade() else {
+            return;
+        };
+        let text = win.get_tts_test_text().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let config = tts::TtsConfig {
+            rate: win.get_tts_rate(),
+            volume: win.get_tts_volume(),
+            voice: {
+                let voice = win.get_tts_voice().to_string();
+                if voice.is_empty() {
+                    None
+                } else {
+                    Some(voice)
+                }
+            },
+        };
+
+        let weak = tts_window_for_test.clone();
+        std::thread::spawn(move || {
+            let result = tts::speak_windows_tts_with_config(&text, &config);
+            let msg = match result {
+                Ok(()) => "TTS 测试完成".to_string(),
+                Err(err) => format!("TTS 测试失败: {err}"),
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    win.set_tts_test_status(SharedString::from(&msg));
+                }
+            });
         });
     });
 
@@ -281,22 +458,43 @@ fn main() {
     let state_c3 = state.clone();
     rt_handle.spawn(lcu_monitor_task(sources_weak3, runes_weak2, state_c3));
 
+    // DeepSeek-based lineup advice loop.
+    let advice_weak = sources_window.as_weak();
+    let advice_state = state.clone();
+    rt_handle.spawn(advice_loop(advice_weak, advice_state));
+
     // Auto-launch LoL if it is not already running.
     let auto_launch_weak = sources_window.as_weak();
+    let auto_launch_state = state.clone();
     rt_handle.spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
+        let mut launch_ok = false;
         let msg = if lcu::cmd::check_if_lol_running() {
-            "LoL 客户端已在运行".to_string()
+            launch_ok = true;
+            "LoL client is already running".to_string()
         } else {
-            match lcu::cmd::launch_lol_client() {
-                Ok(path) => format!("LoL 客户端已启动: {}", path.display()),
-                Err(err) => format!("无法启动 LoL 客户端: {err}"),
+            let preferred_path = {
+                let s = auto_launch_state.lock().unwrap();
+                s.lol_launcher_path.clone()
+            };
+            let result = if preferred_path.trim().is_empty() {
+                lcu::cmd::launch_lol_client()
+            } else {
+                lcu::cmd::launch_lol_client_with_path(Some(preferred_path.as_str()))
+            };
+            match result {
+                Ok(path) => {
+                    launch_ok = true;
+                    format!("LoL client launched: {}", path.display())
+                }
+                Err(err) => format!("Unable to launch LoL client: {err}"),
             }
         };
-
+        let launch_ok = launch_ok;
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = auto_launch_weak.upgrade() {
+                win.set_launch_ok(launch_ok);
                 win.set_launch_status(SharedString::from(&msg));
             }
         });
@@ -571,6 +769,136 @@ async fn lcu_monitor_task(
         }
 
         tokio::time::sleep(Duration::from_millis(2500)).await;
+    }
+}
+
+async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
+    let item_names = web::fetch_item_names().await.unwrap_or_default();
+
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_prompt: Option<String> = None;
+
+    loop {
+        interval.tick().await;
+
+        let (auth_url, champions_map, deepseek_config) = {
+            let s = state.lock().unwrap();
+            (
+                s.auth_url.clone(),
+                s.champions_map.clone(),
+                s.deepseek_config.clone(),
+            )
+        };
+
+        if auth_url.is_empty() {
+            continue;
+        }
+
+        let llm_enabled = {
+            let s = state.lock().unwrap();
+            s.llm_assistance_enabled
+        };
+        if !llm_enabled {
+            continue;
+        }
+
+        if deepseek_config.api_key.is_empty() {
+            let weak = sources_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    win.set_advice_text(SharedString::from("DeepSeek API Key 未配置"));
+                }
+            });
+            continue;
+        }
+
+        let client = DeepSeekClient::new(deepseek_config);
+
+        let endpoint = format!("https://{auth_url}");
+        let live_prompt = match live_client::fetch_all_game_data().await {
+            Ok(game_data) => match advisor::build_live_game_prompt(&game_data, &item_names) {
+                Ok(prompt) => {
+                    last_prompt = Some(prompt.clone());
+                    Some(prompt)
+                }
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+
+        let mut prompt = if let Some(prompt) = live_prompt {
+            prompt
+        } else {
+            let session = lcu_api::get_champ_select_session(&endpoint).await;
+
+            match session {
+                Ok(session) => match advisor::build_lineup_prompt(&session, &champions_map) {
+                    Ok(prompt) => {
+                        last_prompt = Some(prompt.clone());
+                        prompt
+                    }
+                    Err(_) => match last_prompt.clone() {
+                        Some(prompt) => prompt,
+                        None => continue,
+                    },
+                },
+                Err(_) => match last_prompt.clone() {
+                    Some(prompt) => prompt,
+                    None => continue,
+                },
+            }
+        };
+
+        let local_champion_id = {
+            let s = state.lock().unwrap();
+            s.current_champion_id
+        };
+        if local_champion_id > 0 {
+            if let Ok(sections) =
+                web::list_builds_by_id(&DEFAULT_SOURCE_VALUE.to_string(), local_champion_id).await
+            {
+                let build_titles = sections
+                    .iter()
+                    .flat_map(|section| section.item_builds.iter().map(|build| build.title.clone()))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if !build_titles.is_empty() {
+                    prompt = format!("{prompt}\n当前英雄推荐装备方案: {build_titles}");
+                }
+            }
+        }
+
+        match client
+            .chat(advisor::DEFAULT_SYSTEM_PROMPT, &prompt)
+            .await
+        {
+            Ok(advice) => {
+                let tts_text = advice.clone();
+                let weak = sources_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.set_advice_text(SharedString::from(&advice));
+                    }
+                });
+                let tts_config_for_speech = {
+                    let s = state.lock().unwrap();
+                    s.tts_config.clone()
+                };
+                tokio::task::spawn_blocking(move || {
+                    let _ = tts::speak_windows_tts_with_config(&tts_text, &tts_config_for_speech);
+                });
+            }
+            Err(err) => {
+                let msg = format!("DeepSeek 请求失败: {err}");
+                let weak = sources_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.set_advice_text(SharedString::from(&msg));
+                    }
+                });
+            }
+        }
     }
 }
 
