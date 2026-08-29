@@ -19,3 +19,7 @@ node_modules
 
 data/
 _scratch_cmd_check/
+
+.cache/
+cache/
+**/.cache/
