@@ -40,6 +40,7 @@ async function main() {
   }
 
   console.log(JSON.stringify(result));
+  process.exit(0);
 }
 
 main().catch((error) => {

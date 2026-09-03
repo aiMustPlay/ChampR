@@ -28,14 +28,11 @@ export component SourcesWindow inherits Window {
     in-out property <bool> lol-running: false;
     in-out property <string> advice-text: "";
     in-out property <string> apply-status: "";
-    in-out property <bool> show-lcu-details: false;
-    in-out property <bool> show-apply-details: false;
-    in-out property <bool> show-launch-details: false;
-    in-out property <bool> show-advice-details: false;
     in-out property <bool> apply-ok: false;
     in-out property <bool> launch-ok: false;
     in-out property <bool> llm-assistance-enabled: false;
     in-out property <string> lmstudio-status: "unknown";
+    in-out property <string> match-session-status: "等待对局";
     in-out property <string> coach-chat-log: "";
     in-out property <string> coach-input: "";
     in-out property <bool> coach-busy: false;
@@ -45,6 +42,10 @@ export component SourcesWindow inherits Window {
     callback open-tts-settings-clicked();
     callback llm-assistance-changed(bool);
     callback coach-send-clicked();
+    callback lcu-info-clicked();
+    callback launch-info-clicked();
+    callback apply-info-clicked();
+    callback advice-info-clicked();
 
     VerticalBox {
         padding: 16px;
@@ -89,7 +90,7 @@ export component SourcesWindow inherits Window {
                         width: 28px;
                         height: 28px;
                         clicked => {
-                            root.show-lcu-details = !root.show-lcu-details;
+                            root.lcu-info-clicked();
                         }
                     }
                 }
@@ -117,7 +118,7 @@ export component SourcesWindow inherits Window {
                         height: 28px;
                         enabled: root.launch-status != "";
                         clicked => {
-                            root.show-launch-details = !root.show-launch-details;
+                            root.launch-info-clicked();
                         }
                     }
                 }
@@ -145,7 +146,7 @@ export component SourcesWindow inherits Window {
                         height: 28px;
                         enabled: root.apply-status != "";
                         clicked => {
-                            root.show-apply-details = !root.show-apply-details;
+                            root.apply-info-clicked();
                         }
                     }
                 }
@@ -173,7 +174,7 @@ export component SourcesWindow inherits Window {
                         height: 28px;
                         enabled: root.advice-text != "";
                         clicked => {
-                            root.show-advice-details = !root.show-advice-details;
+                            root.advice-info-clicked();
                         }
                     }
                 }
@@ -261,6 +262,12 @@ export component SourcesWindow inherits Window {
                         vertical-alignment: center;
                         color: #666666;
                     }
+                    Text {
+                        text: root.match-session-status;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        color: #666666;
+                    }
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 1px;
@@ -275,32 +282,23 @@ export component SourcesWindow inherits Window {
                     }
                 }
 
+                LineEdit {
+                    text: root.coach-input;
+                    placeholder-text: "Ask coach...";
+                    horizontal-stretch: 1;
+                    edited(text) => {
+                        root.coach-input = text;
+                    }
+                    accepted => {
+                        root.coach-send-clicked();
+                    }
+                }
+
                 TextEdit {
                     text: root.coach-chat-log;
                     read-only: true;
-                    height: 180px;
+                    height: 340px;
                     horizontal-stretch: 1;
-                }
-
-                HorizontalBox {
-                    spacing: 8px;
-
-                    LineEdit {
-                        text: root.coach-input;
-                        placeholder-text: "Ask coach...";
-                        horizontal-stretch: 1;
-                        edited(text) => {
-                            root.coach-input = text;
-                        }
-                    }
-
-                    Button {
-                        text: "Send";
-                        enabled: !root.coach-busy && root.coach-input != "";
-                        clicked => {
-                            root.coach-send-clicked();
-                        }
-                    }
                 }
 
                 if root.coach-busy : Text {
@@ -311,41 +309,6 @@ export component SourcesWindow inherits Window {
             }
         }
 
-        Text {
-            text: "Details";
-            font-size: 15px;
-            font-weight: 600;
-        }
-
-        if root.show-lcu-details : TextEdit {
-            text: root.lcu-status == "connected"
-                ? "League Client: " + root.lcu-summoner
-                : root.lcu-status == "authorizing"
-                ? "League Client detected. Requesting admin access..."
-                : root.lcu-status == "needs-admin"
-                ? "League Client detected. Admin access is required once to read LCU credentials."
-                : "League Client not detected";
-            font-size: 12px;
-            read-only: true;
-        }
-
-        if root.show-launch-details && root.launch-status != "" : TextEdit {
-            text: root.launch-status;
-            font-size: 12px;
-            read-only: true;
-        }
-
-        if root.show-apply-details && root.apply-status != "" : TextEdit {
-            text: root.apply-status;
-            font-size: 12px;
-            read-only: true;
-        }
-
-        if root.show-advice-details && root.advice-text != "" : TextEdit {
-            text: root.advice-text;
-            font-size: 12px;
-            read-only: true;
-        }
     }
 }
 export component TtsSettingsWindow inherits Window {

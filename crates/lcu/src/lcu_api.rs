@@ -77,6 +77,17 @@ pub async fn get_champ_select_session(auth_url: &str) -> Result<Value, LcuError>
     make_get_request(&endpoint).await
 }
 
+pub async fn get_gameflow_phase(auth_url: &str) -> Result<String, LcuError> {
+    let endpoint = format!("{auth_url}/lol-gameflow/v1/gameflow-phase");
+    let phase: Value = make_get_request(&endpoint).await?;
+    Ok(phase.as_str().unwrap_or("None").to_string())
+}
+
+pub async fn get_gameflow_session(auth_url: &str) -> Result<Value, LcuError> {
+    let endpoint = format!("{auth_url}/lol-gameflow/v1/session");
+    make_get_request(&endpoint).await
+}
+
 pub async fn apply_rune(endpoint: String, rune: Rune) -> Result<(), LcuError> {
     let runes: Value = make_get_request(&format!("{endpoint}/lol-perks/v1/pages")).await?;
 

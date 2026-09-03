@@ -12,6 +12,7 @@ class WindowsAudioPlayer {
 
   async playWithMCI(audioBuffer) {
     const tempFile = await this.createTempFile(audioBuffer);
+    const durationMs = Math.max(1000, Math.ceil((audioBuffer.length * 8 * 1000) / 48000) + 500);
     const psScript = `
 Add-Type @"
 using System;
@@ -27,13 +28,38 @@ public class MCI
     {
         mciSendString(command, null, 0, IntPtr.Zero);
     }
+
+    public static string GetString(string command)
+    {
+        var builder = new StringBuilder(256);
+        mciSendString(command, builder, builder.Capacity, IntPtr.Zero);
+        return builder.ToString();
+    }
 }
 "@
 [MCI]::SendString('open "${tempFile}" type mpegvideo alias champraudio')
-[MCI]::SendString('play champraudio wait')
+[MCI]::SendString('play champraudio')
+Start-Sleep -Milliseconds ${durationMs}
 [MCI]::SendString('close champraudio')
+exit 0
 `;
 
+    return this.executePowerShell(psScript, tempFile);
+  }
+
+  async playWithWpf(audioBuffer) {
+    const tempFile = await this.createTempFile(audioBuffer);
+    const durationMs = Math.max(1000, Math.ceil((audioBuffer.length * 8 * 1000) / 48000) + 500);
+    const fileUri = `file:///${tempFile.replace(/\\/g, '/')}`;
+    const psScript = `
+Add-Type -AssemblyName PresentationCore
+$player = New-Object System.Windows.Media.MediaPlayer
+$player.Open([System.Uri]'${fileUri}')
+$player.Play()
+Start-Sleep -Milliseconds ${durationMs}
+$player.Close()
+exit 0
+`;
     return this.executePowerShell(psScript, tempFile);
   }
 
@@ -46,18 +72,21 @@ public class MCI
       );
 
       this.currentProcess = ps;
+      let timeoutHandle = null;
 
       ps.on('close', (code) => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         this.cleanupTempFile(tempFile);
         if (code === 0) resolve();
         else reject(new Error(`MCI playback failed with code ${code}`));
       });
       ps.on('error', (error) => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         this.cleanupTempFile(tempFile);
         reject(error);
       });
 
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         if (!ps.killed) {
           ps.kill();
           this.cleanupTempFile(tempFile);
@@ -93,7 +122,11 @@ public class MCI
 
   async play(audioBuffer, options = {}) {
     if (!this.isWindows) throw new Error('This player is Windows-only');
-    return this.playWithMCI(audioBuffer);
+    try {
+      return await this.playWithWpf(audioBuffer);
+    } catch {
+      return this.playWithMCI(audioBuffer);
+    }
   }
 }
 

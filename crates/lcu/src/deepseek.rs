@@ -67,6 +67,33 @@ impl ChatMessage {
     }
 }
 
+fn normalize_plain_text(text: &str) -> String {
+    let mut output = String::new();
+    let mut last_was_space = false;
+
+    for ch in text.trim().chars() {
+        if ch == '，' || ch == '。' || ch == ',' || ch == '.' {
+            output.push(ch);
+            last_was_space = false;
+        } else if ch.is_alphanumeric() {
+            if last_was_space && !output.is_empty() {
+                output.push(' ');
+            }
+            output.push(ch);
+            last_was_space = false;
+        } else if ch.is_whitespace() {
+            last_was_space = true;
+        }
+    }
+
+    output
+}
+
+fn contains_cjk(text: &str) -> bool {
+    text.chars()
+        .any(|ch| ('\u{4E00}'..='\u{9FFF}').contains(&ch))
+}
+
 #[derive(Debug, Clone)]
 pub struct DeepSeekClient {
     client: reqwest::Client,
@@ -235,8 +262,12 @@ impl DeepSeekClient {
             } else {
                 content
             };
+            let final_content = normalize_plain_text(&final_content);
             if final_content.is_empty() {
                 bail!("DeepSeek returned an empty stream response");
+            }
+            if !contains_cjk(&final_content) {
+                bail!("LLM response must be in Chinese");
             }
             return Ok(final_content);
         }
@@ -278,8 +309,12 @@ impl DeepSeekClient {
         } else {
             message.content
         };
+        let final_content = normalize_plain_text(&final_content);
         if final_content.is_empty() {
             bail!("DeepSeek returned an empty response");
+        }
+        if !contains_cjk(&final_content) {
+            bail!("LLM response must be in Chinese");
         }
         Ok(final_content)
     }

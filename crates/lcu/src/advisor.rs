@@ -10,7 +10,18 @@ Focus on:
 1. Lane matchup and trading tips for the local player.
 2. Mid-game macro priorities around dragons and Void Grubs.
 3. Itemization/positioning advice based on both teams.
-Respond in Chinese, keep it under 250 characters, and do not include unrelated fluff."#;
+When current player levels are available, provide strategy by level range:
+1-3 levels: laning mechanics and trading.
+3-5 levels: laning strategy.
+5-6 levels: kill pressure and all-in strategy.
+6-12 levels: objective control for dragon, Void Grubs, and Rift Herald.
+12-18 levels: teamfighting and side-lane pushing strategy.
+All replies must be in Simplified Chinese only, regardless of the prompt language.
+Do not reply in English or any other language.
+Keep it under 250 characters, and do not include unrelated fluff.
+Your final reply must contain only plain text, commas, and periods. Do not use any
+other punctuation, markdown, bullet points, question marks, exclamation marks,
+colons, parentheses, or special symbols."#;
 
 fn champion_name(champion_id: i64, champions: &ChampionsMap) -> String {
     champions
@@ -218,7 +229,7 @@ pub fn build_live_game_prompt(
     );
 
     Ok(format!(
-        "{}\n\n我方实时阵容:\n{}\n\n敌方实时阵容:\n{}\n\n本局玩家: {}\n\n请结合实时等级和装备，给出对线战斗技巧、装备调整建议，以及控龙/控虫策略。",
+        "{}\n\n我方实时阵容:\n{}\n\n敌方实时阵容:\n{}\n\n本局玩家: {}\n\n请根据当前等级阶段给出对应策略：1-3级对线技巧，3-5级对线策略，5-6级击杀策略，6-12级控小龙/潮虫/先锋，12-18级打团与边路带线。",
         environment,
         order_team.join("\n"),
         chaos_team.join("\n"),
