@@ -66,6 +66,8 @@ struct AppState {
     auto_apply_rune: bool,
     /// Auto-write recommended item builds when the pick locks in.
     auto_apply_builds: bool,
+    /// 排队就绪自动接受对局(设置可开关, 默认关)。
+    auto_accept_match: bool,
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
     reminder_tier: i32,
     /// Show the always-on-top mini match window while the game is in progress.
@@ -149,6 +151,7 @@ impl Default for AppState {
             current_assigned_position: String::new(),
             auto_apply_rune: false,
             auto_apply_builds: false,
+            auto_accept_match: false,
             reminder_tier: 0,
             mini_live_enabled: true,
             pinned_monitor: -1,
@@ -274,6 +277,7 @@ fn main() {
     initial_state.deepseek_web_risk_accepted = saved_settings.deepseek_web_risk_accepted;
     initial_state.auto_apply_rune = saved_settings.auto_apply_rune;
     initial_state.auto_apply_builds = saved_settings.auto_apply_builds;
+    initial_state.auto_accept_match = saved_settings.auto_accept_match;
     initial_state.reminder_tier = saved_settings.reminder_tier;
     initial_state.mini_live_enabled = saved_settings.mini_live_window;
     // 显示器固定: 手动配置, 启动时枚举一次; 插拔显示器后重启 app 生效。
@@ -337,6 +341,7 @@ fn main() {
     tts_settings_window.set_openai_api_key(SharedString::from(&saved_settings.openai_api_key));
     runes_window.set_auto_apply_enabled(saved_settings.auto_apply_rune);
     runes_window.set_auto_builds_enabled(saved_settings.auto_apply_builds);
+    tts_settings_window.set_auto_accept_match(saved_settings.auto_accept_match);
     sources_window.set_reminder_tier(saved_settings.reminder_tier);
     sources_window.set_mini_live_enabled(saved_settings.mini_live_window);
 
@@ -698,6 +703,7 @@ fn main() {
         let lmstudio_base_url = win.get_lmstudio_base_url().to_string();
         let lmstudio_model = win.get_lmstudio_model().to_string();
         let lmstudio_api_key = win.get_lmstudio_api_key().to_string();
+        let auto_accept_match = win.get_auto_accept_match();
         let openai_base_url = win.get_openai_base_url().to_string();
         let openai_model = win.get_openai_model().to_string();
         let openai_api_key = win.get_openai_api_key().to_string();
@@ -726,6 +732,7 @@ fn main() {
             };
             state.ai_provider = ai_provider.clone();
             state.ai_backend = ai_backend.clone();
+            state.auto_accept_match = auto_accept_match;
             state.maohou_bin = maohou_bin.clone();
             state.engine_fallback_warned = false;
             state.deepseek_web_risk_accepted = deepseek_web_risk_accepted;
@@ -761,6 +768,7 @@ fn main() {
         settings.ai_provider = ai_provider;
         settings.ai_backend = ai_backend;
         settings.maohou_bin = maohou_bin;
+        settings.auto_accept_match = auto_accept_match;
         settings.deepseek_web_risk_accepted = deepseek_web_risk_accepted;
         settings.lmstudio_base_url = lmstudio_base_url;
         settings.lmstudio_model = lmstudio_model;
@@ -1259,6 +1267,8 @@ async fn lcu_monitor_task(
     let mut current_champion_id: i64 = 0;
     let mut current_lcu_pid: Option<u32> = None;
     let mut auth_prompted_for_pid: Option<u32> = None;
+    // 排队就绪态守卫: 每次 InProgress 翻转只允许一次自动 accept。
+    let mut ready_accept_done = false;
 
     loop {
         let Some(lcu_pid) = get_lcu_process_id() else {
@@ -1415,6 +1425,34 @@ async fn lcu_monitor_task(
 
                             let data = parsed.get(2).and_then(|v| v.as_object());
                             let uri = data.and_then(|v| v.get("uri")).and_then(|v| v.as_str());
+
+                            // 排队就绪: 自动接受对局(可选, 默认关)。
+                            // 幂等守卫: InProgress 翻转瞬间只 POST 一次。
+                            if uri == Some("/lol-matchmaking/v1/ready-check") {
+                                let rc_state = data
+                                    .and_then(|v| v.get("data"))
+                                    .and_then(|v| v.get("state"))
+                                    .and_then(|v| v.as_str());
+                                if rc_state == Some("InProgress") {
+                                    if !ready_accept_done {
+                                        ready_accept_done = true;
+                                        // 每次从 state 现读, 设置页开关即时生效
+                                        let enabled = { state.lock().unwrap().auto_accept_match };
+                                        if enabled {
+                                            let url = current_auth_url.clone();
+                                            tokio::spawn(async move {
+                                                match lcu::lcu_api::accept_ready_check(&url).await {
+                                                    Ok(_) => info!("Auto-accepted match (ready check)"),
+                                                    Err(e) => warn!("Auto-accept failed: {:?}", e),
+                                                }
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    ready_accept_done = false;
+                                }
+                                continue;
+                            }
 
                             // Champion select session changes
                             if uri == Some("/lol-champ-select/v1/session") {

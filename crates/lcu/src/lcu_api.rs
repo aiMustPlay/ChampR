@@ -72,6 +72,19 @@ pub async fn get_session(auth_url: &String) -> Result<Option<i64>, LcuError> {
     Ok(None)
 }
 
+/// 排队就绪自动接受对局。幂等: LCU 对重复 accept 返回 204/错误均不可见影响,
+/// 调用方自己保证只在状态翻转瞬间调用一次。
+pub async fn accept_ready_check(auth_url: &str) -> Result<(), LcuError> {
+    let client = make_client();
+    client
+        .post(format!("{auth_url}/lol-matchmaking/v1/ready-check/accept"))
+        .version(reqwest::Version::HTTP_2)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await?;
+    Ok(())
+}
+
 pub async fn get_champ_select_session(auth_url: &str) -> Result<Value, LcuError> {
     let endpoint = format!("{auth_url}/lol-champ-select/v1/session");
     make_get_request(&endpoint).await

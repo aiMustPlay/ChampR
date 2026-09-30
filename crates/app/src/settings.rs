@@ -41,6 +41,9 @@ pub struct Settings {
     /// Automatically write recommended item builds on champion lock-in.
     #[serde(default)]
     pub auto_apply_builds: bool,
+    /// 排队就绪时自动点"接受对局"(默认关: 替你进对局属于要认领的行为)。
+    #[serde(default)]
+    pub auto_accept_match: bool,
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
     #[serde(default)]
     pub reminder_tier: i32,
@@ -147,6 +150,7 @@ impl Default for Settings {
             deepseek_web_risk_accepted: false,
             auto_apply_rune: false,
             auto_apply_builds: false,
+            auto_accept_match: false,
             reminder_tier: 0,
             mini_live_window: default_mini_live_window(),
             pinned_monitor: default_pinned_monitor(),

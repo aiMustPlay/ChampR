@@ -489,6 +489,8 @@ export component TtsSettingsWindow inherits Window {
     in-out property <string> tts-test-text: "";
     in-out property <string> tts-test-status: "";
     in-out property <string> lol-launcher-path: "";
+    // 排队就绪自动接受对局(默认关, 替你进对局属于要认领的行为)
+    in-out property <bool> auto-accept-match: false;
     in-out property <string> deepseek-api-key: "";
     in-out property <string> deepseek-base-url: "";
     in-out property <string> deepseek-model: "";
@@ -573,6 +575,30 @@ export component TtsSettingsWindow inherits Window {
                     clicked => {
                         root.open-speech-settings-clicked();
                     }
+                }
+            }
+        }
+
+        Rectangle {
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
+            horizontal-stretch: 1;
+            VerticalBox {
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
+                Text { text: "对局"; font-size: Tokens.f-section; font-weight: 600; }
+                CheckBox {
+                    text: "排队就绪时自动点\"接受对局\"";
+                    checked: root.auto-accept-match;
+                    toggled => { root.auto-accept-match = self.checked; }
+                }
+                Text {
+                    text: "对局中找到后自动接受, 不用再守客户端; 只影响你自己, 每局最多触发一次。默认关。";
+                    font-size: Tokens.f-mini;
+                    color: Tokens.c-text-faint;
+                    wrap: word-wrap;
                 }
             }
         }
