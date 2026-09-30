@@ -1137,7 +1137,82 @@ fn main() {
     sources_window.show().unwrap();
     // 手动固定的显示器(在 show 之后才有 size())
     pin_window_to_monitor(sources_window.window(), &state, PinAnchor::Center);
+    // 系统托盘: 左键召唤主窗, 右键菜单退出。
+    // 独占全屏游戏会盖住主窗 —— 没有托盘就"启动后找不到应用"。
+    setup_tray(sources_window.as_weak());
     slint::run_event_loop().unwrap();
+}
+
+/// 托盘图标: 常驻, 左键点击=显示主窗(并放到前台), 菜单含"退出 ChampR"。
+/// 图标在运行时用 image 现画(金底深框), 不依赖外部资源文件。
+fn setup_tray(main_weak: Weak<SourcesWindow>) {
+    use tray_icon::menu::{Menu, MenuItem};
+    use tray_icon::{TrayIconBuilder, TrayIconEvent};
+
+    let quit_item = MenuItem::new("退出 ChampR", true, None);
+    let quit_id = quit_item.id().clone();
+    let menu = Menu::with_items(&[&quit_item]).expect("tray menu");
+
+    // 32x32 金底深芯(Hextech 风格), 游戏中一眼可辨
+    let size = 32u32;
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let i = ((y * size + x) * 4) as usize;
+            let border = x < 3 || y < 3 || x >= size - 3 || y >= size - 3;
+            let (r, g, b) = if border {
+                (13u8, 17u8, 25u8) // c-dark-page 深底框
+            } else {
+                (200u8, 170u8, 110u8) // c-gold 金芯
+            };
+            rgba[i] = r;
+            rgba[i + 1] = g;
+            rgba[i + 2] = b;
+            rgba[i + 3] = 255;
+        }
+    }
+    let icon = tray_icon::Icon::from_rgba(rgba, size, size).expect("tray icon pixels");
+
+    let _tray = TrayIconBuilder::new()
+        .with_tooltip("ChampR")
+        .with_icon(icon)
+        .with_menu(Box::new(menu))
+        .build()
+        .expect("create tray icon");
+    // 托盘事件泵: 专用线程阻塞收 channel, 再转进 slint 事件循环。
+    // tray-icon 0.19 在 Windows 上自带消息线程, 任意线程 recv 即可。
+    std::thread::Builder::new()
+        .name("tray-events".into())
+        .spawn(move || {
+            let menu_rx = tray_icon::menu::MenuEvent::receiver();
+            loop {
+                if let Ok(event) = TrayIconEvent::receiver().recv() {
+                    if let TrayIconEvent::Click {
+                        button: tray_icon::MouseButton::Left,
+                        button_state: tray_icon::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let w = main_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(win) = w.upgrade() {
+                                let _ = win.show();
+                                win.window().request_redraw();
+                            }
+                        });
+                    }
+                }
+                while let Ok(menu_event) = menu_rx.try_recv() {
+                    if menu_event.id == quit_id {
+                        std::process::exit(0);
+                    }
+                }
+            }
+        })
+        .expect("spawn tray event thread");
+
+    // 托盘对象必须活过整个进程生命周期
+    std::mem::forget(_tray);
 }
 
 // ---------------------------------------------------------------------------
