@@ -641,19 +641,52 @@ pub fn plan_for_matchup(
     opponent_profile: Option<&ChampionProfile>,
     sections_map: &std::collections::HashMap<i64, Vec<BuildSection>>,
 ) -> Option<RunePlan> {
-    let section = sections_map.get(&local_champion_id).and_then(|s| {
-        crate::advisor::best_section(s, local_position)
-    })?;
-    let counters = section.counters.as_ref()?;
-    let matchup = counters.matchups.iter().find(|m| {
-        (m.champion_id > 0 && m.champion_id == opponent_champion_id)
-            || (!opponent_key.is_empty() && m.champion_key == opponent_key)
-    })?;
+    plan_for_matchup_reasons(
+        base,
+        local_champion_id,
+        local_position,
+        opponent_champion_id,
+        opponent_key,
+        opponent_profile,
+        sections_map,
+    )
+    .ok()
+}
+
+/// 与 plan_for_matchup 同语义, 但把"为什么出不来"作为 Err 原因带回(UI 展示用。
+/// 静默隐藏卡片违反"失败必须可见"原则)。
+pub fn plan_for_matchup_reasons(
+    base: &Rune,
+    local_champion_id: i64,
+    local_position: &str,
+    opponent_champion_id: i64,
+    opponent_key: &str,
+    opponent_profile: Option<&ChampionProfile>,
+    sections_map: &std::collections::HashMap<i64, Vec<BuildSection>>,
+) -> Result<RunePlan, &'static str> {
+    let section = sections_map
+        .get(&local_champion_id)
+        .and_then(|s| crate::advisor::best_section(s, local_position))
+        .ok_or("该英雄本位置没有 OP.GG 数据")?;
+    let counters = section
+        .counters
+        .as_ref()
+        .ok_or("该英雄数据缺 counters(需重爬数据)")?;
+    let matchup = counters
+        .matchups
+        .iter()
+        .find(|m| {
+            (m.champion_id > 0 && m.champion_id == opponent_champion_id)
+                || (!opponent_key.is_empty() && m.champion_key == opponent_key)
+        })
+        .ok_or("没有该对位的对局样本")?;
     let pressure = Pressure::from_matchup(matchup);
     if pressure == Pressure::Unknown {
-        return None;
+        return Err("对位样本太少, 压不出档位");
     }
-    let plan = CounterSystem::load().plan(base, opponent_profile, pressure)?;
+    let plan = CounterSystem::load()
+        .plan(base, opponent_profile, pressure)
+        .ok_or("规则引擎没有需要调整的地方")?;
     // 与两页主流推荐完全相同就不另行推荐(避免噪音, 按用户要求)。
     let duplicates_mainstream = section.runes.iter().any(|rune| {
         rune.selected_perk_ids == plan.selected_perk_ids
@@ -661,9 +694,9 @@ pub fn plan_for_matchup(
             && rune.sub_style_id == plan.sub_style_id
     });
     if duplicates_mainstream {
-        return None;
+        return Err("当前推荐页已是针对该对位的最优解");
     }
-    Some(plan)
+    Ok(plan)
 }
 
 #[cfg(test)]

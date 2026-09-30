@@ -1538,7 +1538,7 @@ async fn lcu_monitor_task(
                                         )
                                     };
                                     if auto_rune && !auth.is_empty() {
-                                        let plan = {
+                                        let (plan, _reason) = {
                                             let s = state.lock().unwrap();
                                             compute_counter_plan(session_data, &s)
                                         };
@@ -1606,9 +1606,10 @@ async fn lcu_monitor_task(
                                 // Refresh the local counter-rune plan whenever the
                                 // champ-select session changes (hover / opponent pick)
                                 // and publish it to the runes window.
-                                let (plan_available, plan_summary, plan_newly_available, intel_header, intel_body, war_header, war_body) = {
+                                let (plan_available, plan_summary, plan_newly_available, plan_status, intel_header, intel_body, war_header, war_body) = {
                                     let mut s = state.lock().unwrap();
-                                    let plan = compute_counter_plan(session_data, &s);
+                                    let (plan, reason) = compute_counter_plan(session_data, &s);
+                                    let status = if plan.is_some() { "" } else { reason };
                                     let summary = plan.as_ref().map(|p| {
                                         let mut text = p.line.clone();
                                         if !p.diffs.is_empty() {
@@ -1632,7 +1633,7 @@ async fn lcu_monitor_task(
                                     let available = plan.is_some();
                                     let newly = available && !previously;
                                     s.counter_plan = plan;
-                                    (available, summary, newly, ih, ib, wh, wb)
+                                    (available, summary, newly, status, ih, ib, wh, wb)
                                 };
                                 {
                                     let rw = runes_weak.clone();
@@ -1642,6 +1643,7 @@ async fn lcu_monitor_task(
                                             win.set_counter_summary(SharedString::from(
                                                 plan_summary.unwrap_or_default(),
                                             ));
+                                            win.set_counter_status(SharedString::from(plan_status));
                                             win.set_opponent_header(SharedString::from(
                                                 intel_header,
                                             ));
@@ -2726,27 +2728,49 @@ fn extract_locked_champion_id_from_session(session: Option<&Value>) -> i64 {
 /// Compute the local counter-rule rune plan from the current champ-select
 /// session. Pure CPU (snapshot + cached OP.GG sections), tuned per matchup.
 /// Returns None when no lane matchup is known or no rule fires.
+/// 返回 (方案, 失败原因)。没有方案时原因必须能在 UI 上说清(反静默失败)。
 fn compute_counter_plan(
     session_data: Option<&Value>,
     s: &AppState,
-) -> Option<lcu::counter::RunePlan> {
-    let session = session_data?;
-    let snapshot = lcu::match_context::ChampSelectSnapshot::from_session(session).ok()?;
-    let local = snapshot.local_member()?;
+) -> (Option<lcu::counter::RunePlan>, &'static str) {
+    let Some(session) = session_data else {
+        return (None, "选人会话未建立");
+    };
+    let Ok(snapshot) = lcu::match_context::ChampSelectSnapshot::from_session(session) else {
+        return (None, "选人数据格式不兼容");
+    };
+    let Some(local) = snapshot.local_member() else {
+        return (None, "本地玩家未识别");
+    };
     let local_id = local.effective_champion();
-    let opponent = snapshot.lane_opponent()?;
-    let opponent_id = opponent.effective_champion();
-    if local_id == 0 || opponent_id == 0 {
-        return None;
+    if local_id == 0 {
+        return (None, "先悬停或锁定你的英雄");
     }
-    let opponent_info = s
+    if local.assigned_position.is_empty() {
+        return (None, "本模式没有分路信息(排位选人期可用)");
+    }
+    let Some(opponent) = snapshot.lane_opponent() else {
+        return (None, "对位英雄未识别(对面分路数据缺失)");
+    };
+    let opponent_id = opponent.effective_champion();
+    if opponent_id == 0 {
+        return (None, "等对面选出你的对位英雄");
+    }
+    let Some(opponent_info) = s
         .champions_map
         .values()
-        .find(|c| c.key == opponent_id.to_string())?;
+        .find(|c| c.key == opponent_id.to_string())
+    else {
+        return (None, "冠军表缺该英雄");
+    };
     let profile = lcu::counter::profile_of(opponent_info);
-    let sections = s.opgg_sections_cache.get(&local_id)?;
-    let base = lcu::advisor::best_rune_for_position(sections, &local.assigned_position)?;
-    lcu::counter::plan_for_matchup(
+    let Some(sections) = s.opgg_sections_cache.get(&local_id) else {
+        return (None, "OP.GG 数据还在拉取, 稍后再看");
+    };
+    let Some(base) = lcu::advisor::best_rune_for_position(sections, &local.assigned_position) else {
+        return (None, "该英雄本位置没有推荐符文页");
+    };
+    match lcu::counter::plan_for_matchup_reasons(
         base,
         local_id,
         &local.assigned_position,
@@ -2754,7 +2778,10 @@ fn compute_counter_plan(
         &opponent_info.id.to_lowercase(),
         Some(&profile),
         &s.opgg_sections_cache,
-    )
+    ) {
+        Ok(plan) => (Some(plan), ""),
+        Err(reason) => (None, reason),
+    }
 }
 
 /// 冠军 id → 中文名(静态名表优先, 兜底 DDragon 英文名)。

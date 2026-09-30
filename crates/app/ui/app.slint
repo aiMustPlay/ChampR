@@ -823,6 +823,8 @@ export component RunesWindow inherits Window {
     // Local counter-rule rune plan for the current lane matchup.
     in-out property <bool> counter-available: false;
     in-out property <string> counter-summary: "";
+    // 没有方案时必给出的原因(反静默失败), 有方案时为空。
+    in-out property <string> counter-status: "";
     // 对位心理卡(DDragon allytips/enemytips): 对面已选出对位英雄即显示
     in-out property <string> opponent-header: "";
     in-out property <string> opponent-intel: "";
@@ -995,7 +997,9 @@ export component RunesWindow inherits Window {
                     wrap: word-wrap;
                 }
                 if !root.counter-available : Text {
-                    text: "对位锁定且数据充足后自动给出方案; 若与主流页一致则不重复推荐";
+                    text: root.counter-status != ""
+                        ? "暂无: " + root.counter-status
+                        : "悬停英雄后, 等对面选出对位即给出方案";
                     font-size: Tokens.f-aux;
                     color: Tokens.c-muted;
                     wrap: word-wrap;
