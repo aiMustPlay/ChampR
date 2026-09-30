@@ -78,6 +78,9 @@ struct AppState {
     playbook: lcu::tips::PlaystyleAtlas,
     /// Champion id that was already auto-applied this champ select.
     last_auto_applied_champion: i64,
+    /// 本局选人已应用的 counter 方案签名(样式id+perk id 排列)。
+    /// 选人窗口内对手换锁/换英雄 → 方案变化 → 重新应用; 签名相同不重复写。
+    last_applied_plan_sig: String,
     /// Latest counter-rule rune plan for the current matchup (None when not actionable).
     counter_plan: Option<lcu::counter::RunePlan>,
     /// User closed the runes window during this champ-select; do not re-open
@@ -91,7 +94,7 @@ struct AppState {
     deepseek_config: DeepSeekConfig,
     /// Whether LLM-based match assistance is enabled.
     llm_assistance_enabled: bool,
-    /// AI provider: "deepseek" or "lmstudio".
+    /// AI provider: deepseek / deepseek_web / lmstudio / openai(任意兼容端点)。
     ai_provider: String,
     /// LLM 通道: "maohou" 经 houmao 引擎子进程(默认) / "direct" 直连 reqwest。
     ai_backend: String,
@@ -105,6 +108,8 @@ struct AppState {
     deepseek_web: Option<Arc<BrowserSidecar>>,
     /// LM Studio local OpenAI-compatible config.
     lmstudio_config: DeepSeekConfig,
+    /// 任意 OpenAI 兼容端点(自定义网关/推理站; Claude 不走这里)。
+    openai_config: DeepSeekConfig,
     /// Conversation history shared by automatic advice and the coach chat panel.
     coach_messages: Vec<ChatMessage>,
     /// Last successfully built match context, used as a fallback for follow-up questions.
@@ -150,6 +155,7 @@ impl Default for AppState {
             monitors: Vec::new(),
             playbook: lcu::tips::PlaystyleAtlas::default(),
             last_auto_applied_champion: 0,
+            last_applied_plan_sig: String::new(),
             counter_plan: None,
             runes_window_dismissed: false,
             tts_config: tts::TtsConfig::default(),
@@ -173,6 +179,14 @@ impl Default for AppState {
                 api_key: String::new(),
                 base_url: "http://localhost:1234/v1".to_string(),
                 model: "local-model".to_string(),
+                thinking_enabled: false,
+                reasoning_effort: String::new(),
+                stream_enabled: false,
+            },
+            openai_config: DeepSeekConfig {
+                api_key: String::new(),
+                base_url: String::new(),
+                model: String::new(),
                 thinking_enabled: false,
                 reasoning_effort: String::new(),
                 stream_enabled: false,
@@ -273,6 +287,14 @@ fn main() {
         reasoning_effort: String::new(),
         stream_enabled: false,
     };
+    initial_state.openai_config = DeepSeekConfig {
+        api_key: saved_settings.openai_api_key.clone(),
+        base_url: saved_settings.openai_base_url.clone(),
+        model: saved_settings.openai_model.clone(),
+        thinking_enabled: false,
+        reasoning_effort: String::new(),
+        stream_enabled: false,
+    };
     let state: SharedState = Arc::new(Mutex::new(initial_state));
 
     tts_settings_window.set_tts_rate(saved_settings.tts_rate);
@@ -310,6 +332,9 @@ fn main() {
     tts_settings_window.set_lmstudio_base_url(SharedString::from(&saved_settings.lmstudio_base_url));
     tts_settings_window.set_lmstudio_model(SharedString::from(&saved_settings.lmstudio_model));
     tts_settings_window.set_lmstudio_api_key(SharedString::from(&saved_settings.lmstudio_api_key));
+    tts_settings_window.set_openai_base_url(SharedString::from(&saved_settings.openai_base_url));
+    tts_settings_window.set_openai_model(SharedString::from(&saved_settings.openai_model));
+    tts_settings_window.set_openai_api_key(SharedString::from(&saved_settings.openai_api_key));
     runes_window.set_auto_apply_enabled(saved_settings.auto_apply_rune);
     runes_window.set_auto_builds_enabled(saved_settings.auto_apply_builds);
     sources_window.set_reminder_tier(saved_settings.reminder_tier);
@@ -673,6 +698,9 @@ fn main() {
         let lmstudio_base_url = win.get_lmstudio_base_url().to_string();
         let lmstudio_model = win.get_lmstudio_model().to_string();
         let lmstudio_api_key = win.get_lmstudio_api_key().to_string();
+        let openai_base_url = win.get_openai_base_url().to_string();
+        let openai_model = win.get_openai_model().to_string();
+        let openai_api_key = win.get_openai_api_key().to_string();
         // 下拉里 0 = "不固定", 实际显示器索引从 1 起
         let pinned_monitor = win.get_pinned_monitor() - 1;
 
@@ -709,6 +737,14 @@ fn main() {
                 reasoning_effort: String::new(),
                 stream_enabled: false,
             };
+            state.openai_config = DeepSeekConfig {
+                api_key: openai_api_key.clone(),
+                base_url: openai_base_url.clone(),
+                model: openai_model.clone(),
+                thinking_enabled: false,
+                reasoning_effort: String::new(),
+                stream_enabled: false,
+            };
         }
 
         let mut settings = settings::Settings::load();
@@ -729,6 +765,9 @@ fn main() {
         settings.lmstudio_base_url = lmstudio_base_url;
         settings.lmstudio_model = lmstudio_model;
         settings.lmstudio_api_key = lmstudio_api_key;
+        settings.openai_base_url = openai_base_url;
+        settings.openai_model = openai_model;
+        settings.openai_api_key = openai_api_key;
         settings.pinned_monitor = pinned_monitor;
         settings.save();
 
@@ -1163,6 +1202,7 @@ async fn lcu_monitor_task(
                     s.current_champion_alias.clear();
                     s.current_assigned_position.clear();
                     s.last_auto_applied_champion = 0;
+                    s.last_applied_plan_sig.clear();
                     s.counter_plan = None;
                     s.runes_window_dismissed = false;
                 }
@@ -1201,6 +1241,7 @@ async fn lcu_monitor_task(
                 s.current_champion_alias.clear();
                 s.current_assigned_position.clear();
                 s.last_auto_applied_champion = 0;
+                s.last_applied_plan_sig.clear();
             }
 
             let sw = sources_weak.clone();
@@ -1316,6 +1357,7 @@ async fn lcu_monitor_task(
                                             s.current_champion_alias.clear();
                                             s.current_assigned_position.clear();
                                             s.last_auto_applied_champion = 0;
+                                            s.last_applied_plan_sig.clear();
                                             s.counter_plan = None;
                                             s.runes_window_dismissed = false;
                                         }
@@ -1343,8 +1385,11 @@ async fn lcu_monitor_task(
                                     s.current_assigned_position = assigned_position.clone();
                                 }
 
-                                // Locked-in pick: optionally auto-apply runes and/or
-                                // write recommended item builds, once per champion.
+                                // Locked-in pick: counter 符文跟随选人/对位状态持续生成。
+                                // 我锁了之后, 每次 session 更新都重算方案;
+                                // 方案签名变化(对手锁人/换英雄/换位置) → 重写符文页;
+                                // 签名不变 → 跳过(不刷 LCU 写请求)。
+                                // 对位不可识别(盲选)时退回 OP.GG 最优页, 每英雄一次。
                                 let locked_cid =
                                     extract_locked_champion_id_from_session(session_data);
                                 if locked_cid > 0 {
@@ -1359,55 +1404,69 @@ async fn lcu_monitor_task(
                                             s.is_tencent,
                                         )
                                     };
-                                    if !already_applied {
-                                        let mut armed = false;
-                                        if auto_rune && !auth.is_empty() {
-                                            armed = true;
-                                            // Prefer the local counter-rule plan when the
-                                            // lane opponent is identifiable; plain OP.GG
-                                            // best is the fallback (blind pick etc.).
-                                            let plan = {
-                                                let s = state.lock().unwrap();
-                                                compute_counter_plan(session_data, &s)
-                                            };
-                                            if let Some(plan) = plan {
-                                                state.lock().unwrap().counter_plan =
-                                                    Some(plan.clone());
-                                                info!(
-                                                    "auto-applying counter rune for {locked_cid}: {}",
-                                                    plan.line
+                                    if auto_rune && !auth.is_empty() {
+                                        let plan = {
+                                            let s = state.lock().unwrap();
+                                            compute_counter_plan(session_data, &s)
+                                        };
+                                        match plan {
+                                            Some(plan) => {
+                                                let mut sig = format!(
+                                                    "{}:{}:",
+                                                    plan.primary_style_id, plan.sub_style_id
                                                 );
-                                                tokio::spawn(apply_counter_rune_plan(
-                                                    runes_weak.clone(),
-                                                    auth.clone(),
-                                                    plan,
-                                                    "[自动·Counter] ",
-                                                ));
-                                            } else {
-                                                info!("auto-applying rune for locked champion {locked_cid} ({assigned_position})");
-                                                tokio::spawn(apply_best_rune_for_position(
-                                                    runes_weak.clone(),
-                                                    auth.clone(),
-                                                    locked_cid,
-                                                    assigned_position.clone(),
-                                                    "[自动] ",
-                                                ));
+                                                for id in &plan.selected_perk_ids {
+                                                    sig.push_str(&id.to_string());
+                                                    sig.push(',');
+                                                }
+                                                let changed = {
+                                                    let mut s = state.lock().unwrap();
+                                                    if s.last_applied_plan_sig != sig {
+                                                        s.last_applied_plan_sig = sig;
+                                                        s.counter_plan = Some(plan.clone());
+                                                        true
+                                                    } else {
+                                                        false
+                                                    }
+                                                };
+                                                if changed {
+                                                    info!(
+                                                        "auto-applying counter rune for {locked_cid}: {}",
+                                                        plan.line
+                                                    );
+                                                    tokio::spawn(apply_counter_rune_plan(
+                                                        runes_weak.clone(),
+                                                        auth.clone(),
+                                                        plan,
+                                                        "[自动·Counter] ",
+                                                    ));
+                                                }
+                                            }
+                                            None => {
+                                                if !already_applied {
+                                                    info!("auto-applying rune for locked champion {locked_cid} ({assigned_position})");
+                                                    tokio::spawn(apply_best_rune_for_position(
+                                                        runes_weak.clone(),
+                                                        auth.clone(),
+                                                        locked_cid,
+                                                        assigned_position.clone(),
+                                                        "[自动] ",
+                                                    ));
+                                                }
                                             }
                                         }
-                                        if auto_builds && !lol_dir.is_empty() {
-                                            armed = true;
-                                            info!("auto-writing item builds for locked champion {locked_cid}");
-                                            tokio::spawn(auto_write_builds(
-                                                sources_weak.clone(),
-                                                lol_dir,
-                                                is_tencent,
-                                                locked_cid,
-                                            ));
-                                        }
-                                        if armed {
-                                            state.lock().unwrap().last_auto_applied_champion =
-                                                locked_cid;
-                                        }
+                                    }
+                                    if auto_builds && !lol_dir.is_empty() && !already_applied {
+                                        info!("auto-writing item builds for locked champion {locked_cid}");
+                                        tokio::spawn(auto_write_builds(
+                                            sources_weak.clone(),
+                                            lol_dir,
+                                            is_tencent,
+                                            locked_cid,
+                                        ));
+                                    }
+                                    if !already_applied {
+                                        state.lock().unwrap().last_auto_applied_champion = locked_cid;
                                     }
                                 }
 
@@ -1610,12 +1669,13 @@ async fn chat_with_selected_provider(
         state.coach_request_lock.clone()
     };
     let _request_guard = request_lock.lock().await;
-    let (provider, deepseek_config, lmstudio_config, backend, maohou_bin_setting) = {
+    let (provider, deepseek_config, lmstudio_config, openai_config, backend, maohou_bin_setting) = {
         let state = state.lock().unwrap();
         (
             state.ai_provider.clone(),
             state.deepseek_config.clone(),
             state.lmstudio_config.clone(),
+            state.openai_config.clone(),
             state.ai_backend.clone(),
             state.maohou_bin.clone(),
         )
@@ -1623,13 +1683,21 @@ async fn chat_with_selected_provider(
     if provider == "deepseek_web" {
         return deepseek_web_sidecar(state)?.chat_messages(messages).await;
     }
-    let config = if provider == "lmstudio" {
-        lmstudio_config
-    } else {
-        if deepseek_config.api_key.is_empty() {
-            anyhow::bail!("DeepSeek API Key is not configured");
+    let config = match provider.as_str() {
+        "lmstudio" => lmstudio_config,
+        // 任意 OpenAI 兼容端点: key 可空(本地推理站), base_url 必填
+        "openai" => {
+            if openai_config.base_url.is_empty() {
+                anyhow::bail!("OpenAI 兼容端点: 请先在设置中填 Base URL");
+            }
+            openai_config
         }
-        deepseek_config
+        _ => {
+            if deepseek_config.api_key.is_empty() {
+                anyhow::bail!("DeepSeek API Key is not configured");
+            }
+            deepseek_config
+        }
     };
 
     // LLM 通道: 优先 houmao 引擎子进程(与 houmao-mac 共用引擎实现对齐功能);
@@ -1644,14 +1712,16 @@ async fn chat_with_selected_provider(
         };
         match bin {
             Some(bin) => {
-                let target = if provider == "lmstudio" {
+                // deepseek 走字面方法(注释签名); openai/lmstudio 同一条
+                // "key 可空" 通用路径(for_lmstudio 名字历史遗留, 语义是通用 OpenAI 兼容)。
+                let target = if provider == "deepseek" {
+                    lcu::maohou::MaohouTarget::for_deepseek(&config)
+                } else {
                     lcu::maohou::MaohouTarget::for_lmstudio(
                         &config.base_url,
                         &config.model,
                         &config.api_key,
                     )
-                } else {
-                    lcu::maohou::MaohouTarget::for_deepseek(&config)
                 };
                 return lcu::maohou::chat(&bin, &target, &messages)
                     .await
@@ -2889,6 +2959,16 @@ async fn fetch_and_show_runes(
 
     match web::list_builds_by_id(&source, champion_id).await {
         Ok(sections) => {
+            // 评审 should-fix 落地: 选人阶段的确定性数据通道。
+            // counter 规则引擎/兵法压力档都消费 opgg_sections_cache;
+            // 此前该缓存只在 LLM prompt 路径回填 → 关闭 LLM 辅助时
+            // counter 符文和心战战术档被静默饿死。选定英雄抓取 sections 时
+            // 直接入库, 不再依赖 LLM 开关。
+            {
+                let mut s = state.lock().unwrap();
+                s.opgg_sections_cache
+                    .insert(champion_id, sections.clone());
+            }
             let assigned_position = {
                 let s = state.lock().unwrap();
                 s.current_assigned_position.clone()

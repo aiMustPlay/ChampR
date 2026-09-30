@@ -1,4 +1,4 @@
-import { VerticalBox, HorizontalBox, ListView, Button, SpinBox, LineEdit, TextEdit, CheckBox, ComboBox } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, ListView, ScrollView, Button, SpinBox, LineEdit, TextEdit, CheckBox, ComboBox } from "std-widgets.slint";
 
 // ---------------------------------------------------------------------------
 //  Design tokens —— 全局统一尺寸/颜色, 对齐 analysis_and_design/ui-design-system.md
@@ -501,6 +501,10 @@ export component TtsSettingsWindow inherits Window {
     in-out property <string> lmstudio-base-url: "http://localhost:1234/v1";
     in-out property <string> lmstudio-model: "local-model";
     in-out property <string> lmstudio-api-key: "";
+    // 任意 OpenAI 兼容端点(第三方网关/本地推理站; Claude/Anthropic 不走这里)
+    in-out property <string> openai-base-url: "";
+    in-out property <string> openai-model: "";
+    in-out property <string> openai-api-key: "";
     // 显示器固定: 0 = 不固定, 显示索引从 1 起(由 Rust 启动时装填)
     in-out property <[string]> monitor-options: [];
     in-out property <int> pinned-monitor: 0;
@@ -522,6 +526,12 @@ export component TtsSettingsWindow inherits Window {
             horizontal-alignment: center;
         }
 
+        // 内容超出一屏时滚动; 底部 应用/取消 永远钉在视口内。
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalBox {
+                spacing: Tokens.s-md;
+                padding-right: Tokens.s-sm;
         Rectangle {
             background: Tokens.c-card;
             border-radius: Tokens.radius;
@@ -623,7 +633,7 @@ export component TtsSettingsWindow inherits Window {
                 HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "提供商"; width: Tokens.w-form-label; vertical-alignment: center; }
                     ComboBox {
-                        model: ["deepseek", "deepseek_web", "lmstudio"];
+                        model: ["deepseek", "deepseek_web", "lmstudio", "openai"];
                         current-value: root.ai-provider;
                         selected(value) => {
                             root.ai-provider = value;
@@ -718,6 +728,29 @@ export component TtsSettingsWindow inherits Window {
                         LineEdit { text: root.lmstudio-api-key; horizontal-stretch: 1; edited(text) => { root.lmstudio-api-key = text; } }
                     }
                 }
+                if root.ai-provider == "openai" : VerticalBox {
+                    spacing: Tokens.s-sm;
+                    Text {
+                        text: "任意 OpenAI 兼容端点(第三方网关/本地推理站; Claude 不需要走这里)。API Key 可留空。";
+                        color: Tokens.c-text-secondary;
+                        font-size: Tokens.f-aux;
+                        wrap: word-wrap;
+                    }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "Base URL"; width: Tokens.w-form-label; vertical-alignment: center; }
+                        LineEdit { placeholder-text: "https://你的网关/v1"; text: root.openai-base-url; horizontal-stretch: 1; edited(text) => { root.openai-base-url = text; } }
+                    }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "模型"; width: Tokens.w-form-label; vertical-alignment: center; }
+                        LineEdit { text: root.openai-model; horizontal-stretch: 1; edited(text) => { root.openai-model = text; } }
+                    }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "API Key"; width: Tokens.w-form-label; vertical-alignment: center; }
+                        LineEdit { text: root.openai-api-key; horizontal-stretch: 1; edited(text) => { root.openai-api-key = text; } }
+                    }
+                }
+            }
+        }
             }
         }
 

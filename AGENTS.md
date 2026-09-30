@@ -181,8 +181,8 @@ Rust TTS
 - 符文窗口按本局分路排序 + 一键/锁定自动应用 OP.GG 最优符文页
 - 锁定后自动写入推荐出装文件(auto_apply_builds)
 - 事件驱动目标提醒 TTS(一血/小龙/巢虫/先锋/男爵事件 + 刷新前 30s 倒计时), 档位: 全部/仅关键事件/静音
-- LLM 统一通道(lcu/maohou.rs): provider(deepseek/lmstudio)默认经 houmao 引擎子进程
-  (maohou exec --no-tools), key 走子进程 env(CHAMPR_ENGINE_KEY)不上命令行;
+- LLM 统一通道(lcu/maohou.rs): provider(deepseek/lmstudio/openai 任意兼容端点)
+  默认经 houmao 引擎子进程(maohou exec --no-tools), key 走子进程 env(CHAMPR_ENGINE_KEY)不上命令行;
   二进制定位 = settings.maohou_bin → MAOHOU_BIN env → exe 祖先下 houmao-mac → PATH;
   缺二进制一次性 warn 并降级直连 reqwest; 引擎失败原样报错不双请求。差集: 思维链/
   推理强度/流式在引擎模式不生效(UI 已标注)。见 analysis_and_design/maohou-integration.md

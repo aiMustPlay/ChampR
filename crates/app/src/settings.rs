@@ -57,6 +57,13 @@ pub struct Settings {
     pub lmstudio_model: String,
     #[serde(default)]
     pub lmstudio_api_key: String,
+    /// 任意 OpenAI 兼容端点(本地推理站/第三方网关; Claude/Anthropic 不走这里)。
+    #[serde(default)]
+    pub openai_base_url: String,
+    #[serde(default)]
+    pub openai_model: String,
+    #[serde(default)]
+    pub openai_api_key: String,
     /// LLM 通道: "maohou"(经 houmao 引擎子进程, 默认) / "direct"(直连 reqwest)。
     #[serde(default = "default_ai_backend")]
     pub ai_backend: String,
@@ -146,6 +153,9 @@ impl Default for Settings {
             lmstudio_base_url: default_lmstudio_base_url(),
             lmstudio_model: default_lmstudio_model(),
             lmstudio_api_key: String::new(),
+            openai_base_url: String::new(),
+            openai_model: String::new(),
+            openai_api_key: String::new(),
             ai_backend: default_ai_backend(),
             maohou_bin: String::new(),
         }
@@ -178,7 +188,10 @@ impl Settings {
         if self.deepseek_model.is_empty() {
             self.deepseek_model = default_deepseek_model();
         }
-        if !matches!(self.ai_provider.as_str(), "deepseek" | "deepseek_web" | "lmstudio") {
+        if !matches!(
+            self.ai_provider.as_str(),
+            "deepseek" | "deepseek_web" | "lmstudio" | "openai"
+        ) {
             self.ai_provider = default_ai_provider();
         }
         if !matches!(self.ai_backend.as_str(), "maohou" | "direct") {
