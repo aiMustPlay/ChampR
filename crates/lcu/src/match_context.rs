@@ -588,6 +588,39 @@ impl ChampSelectSnapshot {
             .iter()
             .find(|m| m.assigned_position == local.assigned_position)
     }
+
+    /// 一排选秀顺位: "1楼·上单·暗裔剑魔(我) | 2楼·打野·李青 | …"
+    ///
+    /// Draft 协议下 cell 顺序即选秀顺位(蓝 0..5 / 红 5..10), 这里直接用
+    /// 队伍数组序映射"几楼"。大乱斗等无顺位模式顺序仅是展示序。
+    /// name_of: 由调用方解析冠军 id → 中文名; 未悬停未锁时显示"选择中"。
+    pub fn roster_line(&self, enemy: bool, name_of: &dyn Fn(i64) -> Option<String>) -> String {
+        let team = if enemy { &self.their_team } else { &self.my_team };
+        team.iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let cid = m.effective_champion();
+                let hero = if cid > 0 {
+                    name_of(cid).unwrap_or_else(|| format!("英雄#{cid}"))
+                } else {
+                    "选择中".to_string()
+                };
+                let me_mark = if !enemy && m.cell_id == self.local_cell_id {
+                    "(我)"
+                } else {
+                    ""
+                };
+                format!(
+                    "{}楼·{}·{}{}",
+                    i + 1,
+                    position_label(&m.assigned_position),
+                    hero,
+                    me_mark
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +810,41 @@ mod tests {
         let hover = &snap.my_team[1];
         assert_eq!(hover.champion_id, 0);
         assert_eq!(hover.effective_champion(), 266);
+    }
+
+    #[test]
+    fn roster_line_marks_pick_order_position_and_me() {
+        let session = json!({
+            "localPlayerCellId": 1,
+            "bans": {},
+            "myTeam": [
+                {"cellId": 0, "championId": 142, "championPickIntent": 0, "assignedPosition": "middle"},
+                {"cellId": 1, "championId": 0, "championPickIntent": 266, "assignedPosition": "top"},
+                {"cellId": 2, "championId": 0, "championPickIntent": 0, "assignedPosition": "jungle"}
+            ],
+            "theirTeam": [
+                {"cellId": 5, "championId": 238, "assignedPosition": "middle"},
+                {"cellId": 6, "championId": 23, "championPickIntent": 0, "assignedPosition": "top"}
+            ]
+        });
+        let snap = ChampSelectSnapshot::from_session(&session).unwrap();
+        let names = |id: i64| -> Option<String> {
+            match id {
+                142 => Some("佐伊".into()),
+                266 => Some("暗裔剑魔".into()),
+                238 => Some("劫".into()),
+                23 => Some("泰达米尔".into()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            snap.roster_line(false, &names),
+            "1楼·中单·佐伊 | 2楼·上单·暗裔剑魔(我) | 3楼·打野·选择中"
+        );
+        assert_eq!(
+            snap.roster_line(true, &names),
+            "1楼·中单·劫 | 2楼·上单·泰达米尔"
+        );
     }
 
     #[test]

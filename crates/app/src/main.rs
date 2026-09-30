@@ -1498,6 +1498,26 @@ async fn lcu_monitor_task(
                                     s.current_assigned_position = assigned_position.clone();
                                 }
 
+                                // 选人排面(双方 1~5 楼/分路/已选英雄): 每次 session 更新都刷新
+                                {
+                                    let roster = {
+                                        let s = state.lock().unwrap();
+                                        render_roster_texts(session_data, &s)
+                                    };
+                                    let rw = runes_weak.clone();
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if let Some(win) = rw.upgrade() {
+                                            if let Some((my, enemy)) = roster {
+                                                win.set_roster_my(SharedString::from(my));
+                                                win.set_roster_enemy(SharedString::from(enemy));
+                                            } else {
+                                                win.set_roster_my(SharedString::from(""));
+                                                win.set_roster_enemy(SharedString::from(""));
+                                            }
+                                        }
+                                    });
+                                }
+
                                 // Locked-in pick: counter 符文跟随选人/对位状态持续生成。
                                 // 我锁了之后, 每次 session 更新都重算方案;
                                 // 方案签名变化(对手锁人/换英雄/换位置) → 重写符文页;
@@ -2735,6 +2755,28 @@ fn compute_counter_plan(
         Some(&profile),
         &s.opgg_sections_cache,
     )
+}
+
+/// 冠军 id → 中文名(静态名表优先, 兜底 DDragon 英文名)。
+fn zh_champion_name(s: &AppState, champion_id: i64) -> Option<String> {
+    let key = champion_id.to_string();
+    let champ = s.champions_map.values().find(|c| c.key == key)?;
+    Some(
+        s.static_names
+            .champion(&champ.key)
+            .map(str::to_string)
+            .unwrap_or_else(|| champ.name.clone()),
+    )
+}
+
+/// 选人排面: 我方/敌方 1~5 楼 + 分路 + 已选英雄, 每次 session 更新都刷。
+/// 卡片挂在符文窗标题卡下方; session 结构不兼容时静默隐藏卡(返回 None)。
+fn render_roster_texts(session_data: Option<&Value>, s: &AppState) -> Option<(String, String)> {
+    let session = session_data?;
+    let snap = lcu::match_context::ChampSelectSnapshot::from_session(session).ok()?;
+    let my = snap.roster_line(false, &|id| zh_champion_name(s, id));
+    let enemy = snap.roster_line(true, &|id| zh_champion_name(s, id));
+    Some((format!("我方  {my}"), format!("敌方  {enemy}")))
 }
 
 /// 渲染当前对位英雄的心理图谱(UI "敌方心理"卡的原始文本)。

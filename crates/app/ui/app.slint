@@ -829,6 +829,9 @@ export component RunesWindow inherits Window {
     // 兵法心战卡(战略两层 + 战术压力档): 敌我均选即可显示
     in-out property <string> war-header: "";
     in-out property <string> war-body: "";
+    // 选人排面: 我方/敌方 1~5楼 + 分路 + 已选英雄(每次选人更新都刷)
+    in-out property <string> roster-my: "";
+    in-out property <string> roster-enemy: "";
 
     // --- callbacks ---
     callback close-requested();
@@ -841,6 +844,31 @@ export component RunesWindow inherits Window {
     VerticalBox {
         padding: Tokens.s-lg;
         spacing: Tokens.s-md;
+
+        // 选人排面(我方/敌方 1~5楼 分路 英雄)
+        if root.roster-my != "" : Rectangle {
+            background: Tokens.c-dark-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-gold;
+            horizontal-stretch: 1;
+            VerticalBox {
+                padding: Tokens.s-sm;
+                spacing: 4px;
+                Text {
+                    text: root.roster-my;
+                    font-size: Tokens.f-mini;
+                    color: Tokens.c-gold;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.roster-enemy;
+                    font-size: Tokens.f-mini;
+                    color: Tokens.c-text-faint;
+                    wrap: word-wrap;
+                }
+            }
+        }
 
         // Champion header
         if root.has-champion : HorizontalBox {
