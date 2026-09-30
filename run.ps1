@@ -200,6 +200,20 @@ function Start-App {
         throw 'cargo was not found, so the desktop client cannot be built. Install Rust first.'
     }
 
+    Set-NodeMirrors
+    Push-Location $RepoRoot
+    try {
+        if (-not (Test-Path 'node_modules')) {
+            Write-Step 'Installing Node dependencies (pnpm install)'
+            Invoke-Pnpm -PnpmArgs @('install')
+        }
+        Write-Step 'Building the DeepSeek Web sidecar'
+        Invoke-Pnpm -PnpmArgs @('--dir', 'packages/deepseek-web', 'build')
+    }
+    finally {
+        Pop-Location
+    }
+
     Initialize-MsvcEnvironment
     Write-Step 'Starting the desktop client'
     & cargo run -p champr

@@ -1,5 +1,100 @@
 import { VerticalBox, HorizontalBox, ListView, Button, SpinBox, LineEdit, TextEdit, CheckBox, ComboBox } from "std-widgets.slint";
 
+// ---------------------------------------------------------------------------
+//  Design tokens —— 全局统一尺寸/颜色, 对齐 analysis_and_design/ui-design-system.md
+//  修改窗口样式只改这里, 不要在组件里散落魔法数字。
+// ---------------------------------------------------------------------------
+
+export global Tokens {
+    // spacing scale (8pt grid, 4px 起步)
+    out property <length> s-xs: 4px;
+    out property <length> s-sm: 8px;
+    out property <length> s-md: 12px;
+    out property <length> s-lg: 16px;
+    out property <length> s-xl: 24px;
+
+    // chrome
+    out property <length> radius: 8px;
+    out property <length> status-dot: 8px;
+    out property <length> row-height: 32px;
+    out property <length> icon-btn: 28px;
+    out property <length> btn-height: 36px;
+
+    // typography
+    out property <length> f-title: 22px;
+    out property <length> f-section: 15px;
+    out property <length> f-body: 14px;
+    out property <length> f-aux: 12px;
+    out property <length> f-mini: 11px;
+
+    // 状态色(与设计规范的语义一致)
+    out property <color> c-ok: #22aa55;
+    out property <color> c-warn: #e6a817;
+    out property <color> c-err: #d64545;
+    out property <color> c-muted: #8a94a6;
+
+    // 表面与文字
+    out property <color> c-card: #ffffff;
+    out property <color> c-page: #f5f7fa;
+    out property <color> c-card-border: #e2e8f0;
+    out property <color> c-text: #1f2933;
+    out property <color> c-text-secondary: #666666;
+    out property <color> c-text-faint: #999999;
+
+    // Counter 方案卡强调色
+    out property <color> c-accent-bg: #fffaf0;
+    out property <color> c-accent-border: #f2d5a0;
+    out property <color> c-accent-title: #b06a00;
+    out property <color> c-accent-text: #775500;
+
+    // 表单行高(Settings 输入行, 比状态行高一点)
+    out property <length> row-field: 40px;
+
+    // 描边与焦点
+    out property <length> border-hair: 1px;
+
+    // 补充色
+    out property <color> c-warn-text: #b45309;
+
+    // Hextech 深金 (游戏流程内窗口: 符文窗 / 迷你窗)
+    // 管理态窗口(主窗/设置)保持浅灰工具风——风格跟流程走。
+    // ⚠ dark 窗口内 TextEdit/CheckBox 走系统 Palette 不能改前景色,
+    //   需要有色文字时用 Text 或 "空text CheckBox + Text 标签"。
+    out property <color> c-dark-page: #0e1628;
+    out property <color> c-dark-card: #16233a;
+    out property <color> c-dark-border: #2a3b55;
+    out property <color> c-dark-text: #e8eef6;
+    out property <color> c-dark-secondary: #9fb3c8;
+    out property <color> c-gold: #c89b3c;
+    out property <color> c-dark-accent-bg: #241d10;
+    out property <color> c-dark-accent-text: #d9c78e;
+
+    // 布局件固定占位(有意固定, 语义命名)
+    out property <length> w-status-label: 120px;
+    out property <length> w-form-label: 110px;
+    out property <length> w-tier-combo: 150px;
+    out property <length> avatar: 64px;
+    out property <length> row-rune-item: 72px;
+    out property <length> panel-match-h: 210px;
+    out property <length> panel-log-h: 340px;
+
+    // 窗口尺寸 preferred (min 用于限制缩放)
+    out property <length> win-main-w: 520px;
+    out property <length> win-main-h: 1120px;
+    out property <length> win-main-min-w: 440px;
+    out property <length> win-main-min-h: 860px;
+    out property <length> win-runes-w: 500px;
+    out property <length> win-runes-h: 660px;
+    out property <length> win-runes-min-w: 460px;
+    out property <length> win-runes-min-h: 560px;
+    out property <length> win-settings-w: 480px;
+    out property <length> win-settings-h: 830px;
+    out property <length> win-settings-min-w: 420px;
+    out property <length> win-settings-min-h: 600px;
+    out property <length> win-mini-w: 340px;
+    out property <length> win-mini-h: 240px;
+}
+
 export struct RuneModel {
     /// Display index (for identification in callbacks)
     index: int,
@@ -17,8 +112,11 @@ export struct RuneModel {
 
 export component SourcesWindow inherits Window {
     title: "ChampR";
-    preferred-width: 520px;
-    preferred-height: 900px;
+    preferred-width: Tokens.win-main-w;
+    preferred-height: Tokens.win-main-h;
+    min-width: Tokens.win-main-min-w;
+    min-height: Tokens.win-main-min-h;
+    background: Tokens.c-page;
 
     in-out property <string> status: "loading";
     in-out property <string> lcu-status: "disconnected";
@@ -31,64 +129,69 @@ export component SourcesWindow inherits Window {
     in-out property <bool> apply-ok: false;
     in-out property <bool> launch-ok: false;
     in-out property <bool> llm-assistance-enabled: false;
+    in-out property <int> reminder-tier: 0;
     in-out property <string> lmstudio-status: "unknown";
     in-out property <string> match-session-status: "等待对局";
     in-out property <string> coach-chat-log: "";
     in-out property <string> coach-input: "";
     in-out property <bool> coach-busy: false;
+    in-out property <string> live-match-text: "";
+    in-out property <bool> mini-live-enabled: true;
 
     callback apply-builds-clicked();
     callback launch-lol-clicked();
     callback open-tts-settings-clicked();
     callback llm-assistance-changed(bool);
+    callback reminder-tier-changed(int);
     callback coach-send-clicked();
     callback lcu-info-clicked();
     callback launch-info-clicked();
     callback apply-info-clicked();
     callback advice-info-clicked();
+    callback mini-live-toggled(bool);
 
     VerticalBox {
-        padding: 16px;
-        spacing: 12px;
+        padding: Tokens.s-lg;
+        spacing: Tokens.s-md;
 
         Rectangle {
-            background: #ffffff;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #e2e8f0;
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
 
             VerticalBox {
-                padding: 12px;
-                spacing: 10px;
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
 
                 Text {
-                    text: "Status";
-                    font-size: 15px;
+                    text: "功能状态";
+                    font-size: Tokens.f-section;
                     font-weight: 600;
                 }
 
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: Tokens.s-sm;
                     alignment: center;
-                    height: 32px;
+                    height: Tokens.row-height;
 
                     Text {
                         text: "LCU 🎮";
-                        font-size: 14px;
+                        font-size: Tokens.f-body;
                         vertical-alignment: center;
-                        width: 120px;
+                        width: Tokens.w-status-label;
                     }
                     Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: root.lcu-status == "connected" ? #22aa55 : #d64545;
+                        width: Tokens.status-dot;
+                        height: Tokens.status-dot;
+                        border-radius: Tokens.status-dot / 2;
+                        background: root.lcu-status == "connected" ? Tokens.c-ok : Tokens.c-err;
                     }
                     Button {
                         text: root.lcu-status == "connected" ? "ℹ️" : "❗";
-                        width: 28px;
-                        height: 28px;
+                        width: Tokens.icon-btn;
+                        height: Tokens.icon-btn;
                         clicked => {
                             root.lcu-info-clicked();
                         }
@@ -96,26 +199,26 @@ export component SourcesWindow inherits Window {
                 }
 
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: Tokens.s-sm;
                     alignment: center;
-                    height: 32px;
+                    height: Tokens.row-height;
 
                     Text {
                         text: "LoL 🚀";
-                        font-size: 14px;
+                        font-size: Tokens.f-body;
                         vertical-alignment: center;
-                        width: 120px;
+                        width: Tokens.w-status-label;
                     }
                     Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: root.launch-ok ? #22aa55 : (root.launch-status != "" ? #d64545 : #8a94a6);
+                        width: Tokens.status-dot;
+                        height: Tokens.status-dot;
+                        border-radius: Tokens.status-dot / 2;
+                        background: root.launch-ok ? Tokens.c-ok : (root.launch-status != "" ? Tokens.c-err : Tokens.c-muted);
                     }
                     Button {
                         text: root.launch-ok ? "ℹ️" : "❗";
-                        width: 28px;
-                        height: 28px;
+                        width: Tokens.icon-btn;
+                        height: Tokens.icon-btn;
                         enabled: root.launch-status != "";
                         clicked => {
                             root.launch-info-clicked();
@@ -124,26 +227,26 @@ export component SourcesWindow inherits Window {
                 }
 
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: Tokens.s-sm;
                     alignment: center;
-                    height: 32px;
+                    height: Tokens.row-height;
 
                     Text {
                         text: "Builds 🛠️";
-                        font-size: 14px;
+                        font-size: Tokens.f-body;
                         vertical-alignment: center;
-                        width: 120px;
+                        width: Tokens.w-status-label;
                     }
                     Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: root.apply-ok ? #22aa55 : (root.apply-status != "" ? #d64545 : #8a94a6);
+                        width: Tokens.status-dot;
+                        height: Tokens.status-dot;
+                        border-radius: Tokens.status-dot / 2;
+                        background: root.apply-ok ? Tokens.c-ok : (root.apply-status != "" ? Tokens.c-err : Tokens.c-muted);
                     }
                     Button {
                         text: root.apply-ok ? "ℹ️" : "❗";
-                        width: 28px;
-                        height: 28px;
+                        width: Tokens.icon-btn;
+                        height: Tokens.icon-btn;
                         enabled: root.apply-status != "";
                         clicked => {
                             root.apply-info-clicked();
@@ -152,26 +255,26 @@ export component SourcesWindow inherits Window {
                 }
 
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: Tokens.s-sm;
                     alignment: center;
-                    height: 32px;
+                    height: Tokens.row-height;
 
                     Text {
                         text: "Advice 🧠";
-                        font-size: 14px;
+                        font-size: Tokens.f-body;
                         vertical-alignment: center;
-                        width: 120px;
+                        width: Tokens.w-status-label;
                     }
                     Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: root.advice-text != "" ? #22aa55 : #8a94a6;
+                        width: Tokens.status-dot;
+                        height: Tokens.status-dot;
+                        border-radius: Tokens.status-dot / 2;
+                        background: root.advice-text != "" ? Tokens.c-ok : Tokens.c-muted;
                     }
                     Button {
                         text: "ℹ️";
-                        width: 28px;
-                        height: 28px;
+                        width: Tokens.icon-btn;
+                        height: Tokens.icon-btn;
                         enabled: root.advice-text != "";
                         clicked => {
                             root.advice-info-clicked();
@@ -183,25 +286,25 @@ export component SourcesWindow inherits Window {
         }
 
         Rectangle {
-            background: #ffffff;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #e2e8f0;
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
 
             VerticalBox {
-                padding: 12px;
-                spacing: 10px;
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
 
                 Text {
-                    text: "Actions";
-                    font-size: 15px;
+                    text: "快捷操作";
+                    font-size: Tokens.f-section;
                     font-weight: 600;
                 }
 
                 Button {
                     text: "🚀 启动 LoL";
-                    height: 36px;
+                    height: Tokens.btn-height;
                     horizontal-stretch: 1;
                     enabled: !root.lol-running;
                     clicked => {
@@ -210,8 +313,8 @@ export component SourcesWindow inherits Window {
                 }
 
                 Button {
-                    text: "🛠 Apply Builds";
-                    height: 36px;
+                    text: "🛠 应用出装";
+                    height: Tokens.btn-height;
                     horizontal-stretch: 1;
                     enabled: !root.applying-builds && root.lcu-status == "connected";
                     clicked => {
@@ -220,8 +323,8 @@ export component SourcesWindow inherits Window {
                 }
 
                 Button {
-                    text: "🎛 Settings";
-                    height: 36px;
+                    text: "🎛 设置";
+                    height: Tokens.btn-height;
                     horizontal-stretch: 1;
                     clicked => {
                         root.open-tts-settings-clicked();
@@ -231,42 +334,88 @@ export component SourcesWindow inherits Window {
         }
 
         Rectangle {
-            background: #ffffff;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #e2e8f0;
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
 
             VerticalBox {
-                padding: 12px;
-                spacing: 8px;
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
 
                 HorizontalBox {
-                    spacing: 8px;
+                    spacing: Tokens.s-sm;
                     alignment: center;
-                    height: 32px;
+                    height: Tokens.row-height;
+
+                    Text {
+                        text: "对局面板";
+                        font-size: Tokens.f-section;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 1px;
+                    }
+                    CheckBox {
+                        text: "对局迷你窗";
+                        checked: root.mini-live-enabled;
+                        toggled => {
+                            root.mini-live-enabled = !root.mini-live-enabled;
+                            root.mini-live-toggled(root.mini-live-enabled);
+                        }
+                    }
+                }
+
+                TextEdit {
+                    text: root.live-match-text != "" ? root.live-match-text : "等待对局数据(进入英雄选择或对局后自动刷新)";
+                    read-only: true;
+                    height: Tokens.panel-match-h;
+                    horizontal-stretch: 1;
+                    font-size: Tokens.f-aux;
+                }
+            }
+        }
+
+        Rectangle {
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
+            horizontal-stretch: 1;
+
+            VerticalBox {
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
+
+                HorizontalBox {
+                    spacing: Tokens.s-sm;
+                    alignment: center;
+                    height: Tokens.row-height;
 
                     Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        border-radius: 4px;
-                        background: root.lmstudio-status == "connected" ? #22aa55
-                            : root.lmstudio-status == "unreachable" ? #d64545
-                            : #8a94a6;
+                        width: Tokens.status-dot;
+                        height: Tokens.status-dot;
+                        border-radius: Tokens.status-dot / 2;
+                        background: root.lmstudio-status == "connected" ? Tokens.c-ok
+                            : root.lmstudio-status == "unreachable" ? Tokens.c-err
+                            : Tokens.c-muted;
                     }
                     Text {
-                        text: root.lmstudio-status == "connected" ? "LM Studio Online"
-                            : root.lmstudio-status == "unreachable" ? "LM Studio Offline"
-                            : "LM Studio Checking";
-                        font-size: 12px;
+                        text: root.lmstudio-status == "connected" ? "LM Studio 在线"
+                            : root.lmstudio-status == "unreachable" ? "LM Studio 离线"
+                            : "LM Studio 检测中";
+                        font-size: Tokens.f-aux;
                         vertical-alignment: center;
-                        color: #666666;
+                        color: Tokens.c-text-secondary;
                     }
                     Text {
                         text: root.match-session-status;
-                        font-size: 12px;
+                        font-size: Tokens.f-aux;
                         vertical-alignment: center;
-                        color: #666666;
+                        color: Tokens.c-text-secondary;
                     }
                     Rectangle {
                         horizontal-stretch: 1;
@@ -280,11 +429,20 @@ export component SourcesWindow inherits Window {
                             root.llm-assistance-changed(root.llm-assistance-enabled);
                         }
                     }
+                    ComboBox {
+                        width: Tokens.w-tier-combo;
+                        model: ["提醒: 全部", "提醒: 仅关键事件", "提醒: 静音(记日志)"];
+                        current-index: root.reminder-tier;
+                        changed current-index => {
+                            root.reminder-tier = self.current-index;
+                            root.reminder-tier-changed(self.current-index);
+                        }
+                    }
                 }
 
                 LineEdit {
                     text: root.coach-input;
-                    placeholder-text: "Ask coach...";
+                    placeholder-text: "向教练提问, 回车发送…";
                     horizontal-stretch: 1;
                     edited(text) => {
                         root.coach-input = text;
@@ -294,17 +452,19 @@ export component SourcesWindow inherits Window {
                     }
                 }
 
+                // 拉高主窗时日志区吸收剩余空间 (stretch=1, 其余卡片固定)
                 TextEdit {
                     text: root.coach-chat-log;
                     read-only: true;
-                    height: 340px;
+                    height: Tokens.panel-log-h;
                     horizontal-stretch: 1;
+                    vertical-stretch: 1;
                 }
 
                 if root.coach-busy : Text {
-                    text: "Coach is thinking...";
-                    font-size: 12px;
-                    color: #888888;
+                    text: "教练思考中…";
+                    font-size: Tokens.f-aux;
+                    color: Tokens.c-muted;
                 }
             }
         }
@@ -312,9 +472,12 @@ export component SourcesWindow inherits Window {
     }
 }
 export component TtsSettingsWindow inherits Window {
-    title: "Settings";
-    preferred-width: 480px;
-    preferred-height: 760px;
+    title: "设置";
+    preferred-width: Tokens.win-settings-w;
+    preferred-height: Tokens.win-settings-h;
+    min-width: Tokens.win-settings-min-w;
+    min-height: Tokens.win-settings-min-h;
+    background: Tokens.c-page;
 
     in-out property <int> tts-rate: 0;
     in-out property <int> tts-volume: 100;
@@ -329,55 +492,65 @@ export component TtsSettingsWindow inherits Window {
     in-out property <bool> deepseek-stream: false;
     in-out property <string> deepseek-reasoning-effort: "";
     in-out property <string> ai-provider: "deepseek";
+    // LLM 通道: maohou 引擎子进程(默认) / direct 直连; maohou-status 启动时检测报告
+    in-out property <string> ai-backend: "maohou";
+    in-out property <string> maohou-bin: "";
+    in-out property <string> maohou-status: "";
+    in-out property <bool> deepseek-web-risk-accepted: false;
+    in-out property <string> deepseek-web-status: "未启动";
     in-out property <string> lmstudio-base-url: "http://localhost:1234/v1";
     in-out property <string> lmstudio-model: "local-model";
     in-out property <string> lmstudio-api-key: "";
+    // 显示器固定: 0 = 不固定, 显示索引从 1 起(由 Rust 启动时装填)
+    in-out property <[string]> monitor-options: [];
+    in-out property <int> pinned-monitor: 0;
 
     callback apply-clicked();
     callback cancel-clicked();
     callback test-tts-clicked();
     callback open-speech-settings-clicked();
+    callback open-deepseek-web-login-clicked();
 
     VerticalBox {
-        padding: 16px;
-        spacing: 12px;
+        padding: Tokens.s-lg;
+        spacing: Tokens.s-md;
 
         Text {
-            text: "Settings";
-            font-size: 22px;
+            text: "设置";
+            font-size: Tokens.f-title;
             font-weight: 700;
             horizontal-alignment: center;
         }
 
         Rectangle {
-            background: #ffffff;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #e2e8f0;
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
             VerticalBox {
-                padding: 12px;
-                spacing: 10px;
-                Text { text: "TTS"; font-size: 15px; font-weight: 600; }
-                HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "Rate"; width: 110px; vertical-alignment: center; }
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
+                Text { text: "TTS"; font-size: Tokens.f-section; font-weight: 600; }
+                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "语速"; width: Tokens.w-form-label; vertical-alignment: center; }
                     SpinBox { minimum: -10; maximum: 10; value: root.tts-rate; horizontal-stretch: 1; edited(value) => { root.tts-rate = value; } }
                 }
-                HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "Volume"; width: 110px; vertical-alignment: center; }
+                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "音量"; width: Tokens.w-form-label; vertical-alignment: center; }
                     SpinBox { minimum: 0; maximum: 100; value: root.tts-volume; horizontal-stretch: 1; edited(value) => { root.tts-volume = value; } }
                 }
-                HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "Voice"; width: 110px; vertical-alignment: center; }
+                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "音色"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.tts-voice; horizontal-stretch: 1; edited(text) => { root.tts-voice = text; } }
                 }
-                HorizontalBox { height: 40px; spacing: 12px;
+                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
                     LineEdit { text: root.tts-test-text; placeholder-text: "输入测试文字"; horizontal-stretch: 1; edited(text) => { root.tts-test-text = text; } }
-                    Button { text: "🔊 Test"; clicked => { root.test-tts-clicked(); } }
+                    Button { text: "🔊 试听"; clicked => { root.test-tts-clicked(); } }
                 }
                 if root.tts-test-status != "" : TextEdit {
                     text: root.tts-test-status;
-                    font-size: 12px;
+                    font-size: Tokens.f-aux;
                     read-only: true;
                 }
                 Button {
@@ -391,77 +564,157 @@ export component TtsSettingsWindow inherits Window {
         }
 
         Rectangle {
-            background: #ffffff;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #e2e8f0;
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
             VerticalBox {
-                padding: 12px;
-                spacing: 10px;
-                Text { text: "LoL"; font-size: 15px; font-weight: 600; }
-                HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "Launcher"; width: 110px; vertical-alignment: center; }
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
+                Text { text: "显示器定位"; font-size: Tokens.f-section; font-weight: 600; }
+                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "固定到屏幕"; width: Tokens.w-form-label; vertical-alignment: center; }
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: root.monitor-options;
+                        current-index: root.pinned-monitor;
+                        changed current-index => {
+                            root.pinned-monitor = self.current-index;
+                        }
+                    }
+                }
+                Text {
+                    text: "选定后所有窗口都出现在该屏, 不与游戏主屏抢占; 插拔显示器后需重启本程序。";
+                    font-size: Tokens.f-mini;
+                    color: Tokens.c-text-faint;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Rectangle {
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
+            horizontal-stretch: 1;
+            VerticalBox {
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
+                Text { text: "LoL"; font-size: Tokens.f-section; font-weight: 600; }
+                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "启动器路径"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.lol-launcher-path; horizontal-stretch: 1; edited(text) => { root.lol-launcher-path = text; } }
                 }
             }
         }
 
         Rectangle {
-            background: #ffffff;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #e2e8f0;
+            background: Tokens.c-card;
+            border-radius: Tokens.radius;
+            border-width: Tokens.border-hair;
+            border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
             VerticalBox {
-                padding: 12px;
-                spacing: 10px;
-                Text { text: "DeepSeek"; font-size: 15px; font-weight: 600; }
-                HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "Provider"; width: 110px; vertical-alignment: center; }
+                padding: Tokens.s-md;
+                spacing: Tokens.s-sm;
+                Text { text: "DeepSeek"; font-size: Tokens.f-section; font-weight: 600; }
+                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "提供商"; width: Tokens.w-form-label; vertical-alignment: center; }
                     ComboBox {
-                        model: ["deepseek", "lmstudio"];
+                        model: ["deepseek", "deepseek_web", "lmstudio"];
                         current-value: root.ai-provider;
                         selected(value) => {
                             root.ai-provider = value;
                         }
                     }
                 }
+                if root.ai-provider != "deepseek_web" : VerticalBox {
+                    spacing: Tokens.s-sm;
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "LLM 通道"; width: Tokens.w-form-label; vertical-alignment: center; }
+                        ComboBox {
+                            model: ["maohou", "direct"];
+                            current-value: root.ai-backend;
+                            selected(value) => { root.ai-backend = value; }
+                        }
+                    }
+                    Text {
+                        text: root.maohou-status;
+                        color: Tokens.c-text-secondary;
+                        font-size: Tokens.f-aux;
+                        wrap: word-wrap;
+                    }
+                    if root.ai-backend == "maohou" : HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "引擎路径"; width: Tokens.w-form-label; vertical-alignment: center; }
+                        LineEdit { placeholder-text: "留空 = 自动(MAOHOU_BIN → 兄弟仓 → PATH)"; text: root.maohou-bin; horizontal-stretch: 1; edited(text) => { root.maohou-bin = text; } }
+                    }
+                    if root.ai-backend == "maohou" : Text {
+                        text: "引擎模式暂不支持: 思维链 / 推理强度 / 流式输出 —— 这些开关在引擎模式不生效; 带回请在 houmao-mac/engine 侧补齐后再启用。";
+                        color: Tokens.c-text-secondary;
+                        font-size: Tokens.f-aux;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.ai-provider == "deepseek_web" : VerticalBox {
+                    spacing: Tokens.s-sm;
+                    Text {
+                        text: "实验功能: 网页改版或风控可能导致中断。";
+                        color: Tokens.c-warn-text;
+                        wrap: word-wrap;
+                    }
+                    CheckBox {
+                        text: "我了解网页自动化的账号与服务条款风险";
+                        checked: root.deepseek-web-risk-accepted;
+                        toggled => { root.deepseek-web-risk-accepted = !root.deepseek-web-risk-accepted; }
+                    }
+                    Button {
+                        text: "打开 DeepSeek 登录窗口";
+                        enabled: root.deepseek-web-risk-accepted;
+                        clicked => { root.open-deepseek-web-login-clicked(); }
+                    }
+                    Text { text: root.deepseek-web-status; color: Tokens.c-text-secondary; wrap: word-wrap; }
+                }
                 if root.ai-provider == "deepseek" : VerticalBox {
-                    spacing: 10px;
-                    HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "API Key"; width: 110px; vertical-alignment: center; }
+                    spacing: Tokens.s-sm;
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "API Key"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-api-key; horizontal-stretch: 1; edited(text) => { root.deepseek-api-key = text; } }
                     }
-                    HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "Model"; width: 110px; vertical-alignment: center; }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "Base URL"; width: Tokens.w-form-label; vertical-alignment: center; }
+                    LineEdit { text: root.deepseek-base-url; horizontal-stretch: 1; edited(text) => { root.deepseek-base-url = text; } }
+                    }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "模型"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-model; horizontal-stretch: 1; edited(text) => { root.deepseek-model = text; } }
                     }
-                    HorizontalBox { height: 32px; spacing: 12px;
-                    Text { text: "Thinking"; width: 110px; vertical-alignment: center; }
+                    HorizontalBox { height: Tokens.row-height; spacing: Tokens.s-md;
+                    Text { text: "思维链"; width: Tokens.w-form-label; vertical-alignment: center; }
                     CheckBox { checked: root.deepseek-thinking; toggled => { root.deepseek-thinking = !root.deepseek-thinking; } }
                     }
-                    HorizontalBox { height: 32px; spacing: 12px;
-                    Text { text: "Stream"; width: 110px; vertical-alignment: center; }
+                    HorizontalBox { height: Tokens.row-height; spacing: Tokens.s-md;
+                    Text { text: "流式输出"; width: Tokens.w-form-label; vertical-alignment: center; }
                     CheckBox { checked: root.deepseek-stream; toggled => { root.deepseek-stream = !root.deepseek-stream; } }
                     }
-                    HorizontalBox { height: 40px; spacing: 12px;
-                    Text { text: "Reasoning"; width: 110px; vertical-alignment: center; }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    Text { text: "推理强度"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-reasoning-effort; horizontal-stretch: 1; edited(text) => { root.deepseek-reasoning-effort = text; } }
                     }
                 }
                 if root.ai-provider == "lmstudio" : VerticalBox {
-                    spacing: 10px;
-                    HorizontalBox { height: 40px; spacing: 12px;
-                        Text { text: "Base URL"; width: 110px; vertical-alignment: center; }
+                    spacing: Tokens.s-sm;
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "Base URL"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.lmstudio-base-url; horizontal-stretch: 1; edited(text) => { root.lmstudio-base-url = text; } }
                     }
-                    HorizontalBox { height: 40px; spacing: 12px;
-                        Text { text: "Model"; width: 110px; vertical-alignment: center; }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "模型"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.lmstudio-model; horizontal-stretch: 1; edited(text) => { root.lmstudio-model = text; } }
                     }
-                    HorizontalBox { height: 40px; spacing: 12px;
-                        Text { text: "API Key"; width: 110px; vertical-alignment: center; }
+                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                        Text { text: "API Key"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.lmstudio-api-key; horizontal-stretch: 1; edited(text) => { root.lmstudio-api-key = text; } }
                     }
                 }
@@ -470,16 +723,20 @@ export component TtsSettingsWindow inherits Window {
 
         HorizontalBox {
             alignment: end;
-            spacing: 12px;
-            Button { text: "Cancel"; clicked => { root.cancel-clicked(); } }
-            Button { text: "Apply"; clicked => { root.apply-clicked(); } }
+            spacing: Tokens.s-md;
+            Button { text: "取消"; clicked => { root.cancel-clicked(); } }
+            Button { text: "应用"; clicked => { root.apply-clicked(); } }
         }
     }
 }
 export component RunesWindow inherits Window {
-    title: "Runes";
-    preferred-width: 500px;
-    preferred-height: 640px;
+    title: "符文";
+    preferred-width: Tokens.win-runes-w;
+    preferred-height: Tokens.win-runes-h;
+    min-width: Tokens.win-runes-min-w;
+    min-height: Tokens.win-runes-min-h;
+    // 选人阶段属游戏流程内: 深金配色, 融入 LoL 氛围
+    background: Tokens.c-dark-page;
 
     // --- properties ---
     in-out property <int> champion-id: 0;
@@ -489,116 +746,290 @@ export component RunesWindow inherits Window {
     in-out property <[RuneModel]> runes;
     in-out property <string> rune-status: "";  // "" | "loading" | "error" | "success"
     in-out property <string> apply-rune-status: "";
+    in-out property <string> position-label: "";   // 本局分路, e.g. "中单"
+    in-out property <bool> auto-apply-enabled: false;
+    in-out property <bool> auto-builds-enabled: false;
+    // Local counter-rule rune plan for the current lane matchup.
+    in-out property <bool> counter-available: false;
+    in-out property <string> counter-summary: "";
+    // 对位心理卡(DDragon allytips/enemytips): 对面已选出对位英雄即显示
+    in-out property <string> opponent-header: "";
+    in-out property <string> opponent-intel: "";
+    // 兵法心战卡(战略两层 + 战术压力档): 敌我均选即可显示
+    in-out property <string> war-header: "";
+    in-out property <string> war-body: "";
 
     // --- callbacks ---
     callback close-requested();
     callback apply-rune-clicked(int);
+    callback apply-best-rune-clicked();
+    callback apply-counter-rune-clicked();
+    callback auto-apply-toggled(bool);
+    callback auto-builds-toggled(bool);
 
     VerticalBox {
-        padding: 16px;
-        spacing: 12px;
+        padding: Tokens.s-lg;
+        spacing: Tokens.s-md;
 
         // Champion header
         if root.has-champion : HorizontalBox {
-            spacing: 12px;
+            spacing: Tokens.s-md;
             alignment: center;
 
             Image {
                 source: root.champion-avatar;
-                width: 64px;
-                height: 64px;
+                width: Tokens.avatar;
+                height: Tokens.avatar;
             }
 
             VerticalBox {
                 alignment: center;
-                TextEdit {
+                Text {
                     text: root.champion-name != "" ? root.champion-name : "Champion " + root.champion-id;
-                    font-size: 22px;
-                    read-only: true;
+                    font-size: Tokens.f-title;
+                    font-weight: 700;
+                    color: Tokens.c-gold;
+                    overflow: elide;
                 }
             }
         }
 
         if root.has-champion : HorizontalBox {
-            spacing: 8px;
+            spacing: Tokens.s-sm;
             alignment: center;
 
             Text {
-                text: "Source:";
-                font-size: 14px;
+                text: "本局分路: " + (root.position-label != "" ? root.position-label : "未知") + " · 数据源 OP.GG";
+                font-size: Tokens.f-body;
+                color: Tokens.c-dark-text;
                 vertical-alignment: center;
             }
-            Text {
-                text: "OP.GG";
-                font-size: 14px;
-                color: #666666;
+        }
+
+        // Matchup-targeted rune actions: counter plan is the primary action
+        // whenever the local rule engine has one; mainstream-only otherwise.
+        if root.has-champion : HorizontalBox {
+            spacing: Tokens.s-sm;
+
+            Button {
+                text: "应用 Counter 符文";
+                primary: root.counter-available;
+                enabled: root.counter-available;
+                horizontal-stretch: 1;
+                clicked => {
+                    root.apply-counter-rune-clicked();
+                }
             }
+            Button {
+                text: "应用主流最优符文";
+                primary: !root.counter-available;
+                horizontal-stretch: 1;
+                clicked => {
+                    root.apply-best-rune-clicked();
+                }
+            }
+        }
+
+        if root.has-champion : HorizontalBox {
+            spacing: Tokens.s-lg;
+            alignment: center;
+
+            HorizontalBox {
+                spacing: Tokens.s-xs;
+                alignment: center;
+                CheckBox {
+                    text: "";
+                    checked <=> root.auto-apply-enabled;
+                    toggled => {
+                        root.auto-apply-toggled(root.auto-apply-enabled);
+                    }
+                }
+                Text {
+                    text: "锁后自动符文";
+                    font-size: Tokens.f-aux;
+                    color: Tokens.c-dark-secondary;
+                    vertical-alignment: center;
+                }
+            }
+            HorizontalBox {
+                spacing: Tokens.s-xs;
+                alignment: center;
+                CheckBox {
+                    text: "";
+                    checked <=> root.auto-builds-enabled;
+                    toggled => {
+                        root.auto-builds-toggled(root.auto-builds-enabled);
+                    }
+                }
+                Text {
+                    text: "锁后自动出装";
+                    font-size: Tokens.f-aux;
+                    color: Tokens.c-dark-secondary;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Counter plan card: summary + reason when available, explicit hint
+        // when not (previously the button went gray with no explanation).
+        if root.has-champion : Rectangle {
+            background: Tokens.c-dark-accent-bg;
+            border-color: Tokens.c-gold;
+            border-width: Tokens.border-hair;
+            border-radius: Tokens.radius;
+            horizontal-stretch: 1;
+
+            VerticalBox {
+                padding: Tokens.s-sm;
+                spacing: Tokens.s-xs;
+
+                Text {
+                    text: "Counter 符文(本地规则, 按对位与敌方类型调整)";
+                    font-size: Tokens.f-aux;
+                    font-weight: 600;
+                    color: Tokens.c-gold;
+                }
+                if root.counter-available : Text {
+                    text: root.counter-summary;
+                    font-size: Tokens.f-aux;
+                    color: Tokens.c-dark-accent-text;
+                    wrap: word-wrap;
+                }
+                if !root.counter-available : Text {
+                    text: "对位锁定且数据充足后自动给出方案; 若与主流页一致则不重复推荐";
+                    font-size: Tokens.f-aux;
+                    color: Tokens.c-muted;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // 对位心理卡: 意图(他想)+弱点(打他), 立于 counter 符文卡之下
+        if root.has-champion && root.opponent-intel != "" : Rectangle {
+            background: Tokens.c-dark-card;
+            border-color: Tokens.c-dark-border;
+            border-width: Tokens.border-hair;
+            border-radius: Tokens.radius;
+            horizontal-stretch: 1;
+
+            VerticalBox {
+                padding: Tokens.s-sm;
+                spacing: Tokens.s-xs;
+
+                Text {
+                    text: root.opponent-header;
+                    font-size: Tokens.f-aux;
+                    font-weight: 600;
+                    color: Tokens.c-gold;
+                }
+                Text {
+                    text: root.opponent-intel;
+                    font-size: Tokens.f-aux;
+                    color: Tokens.c-dark-text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // 兵法心战卡: 战略(双方分型) + 敌方心理/连招 + 战术(压力档)
+        if root.has-champion && root.war-body != "" : Rectangle {
+            background: Tokens.c-dark-accent-bg;
+            border-color: Tokens.c-dark-border;
+            border-width: Tokens.border-hair;
+            border-radius: Tokens.radius;
+            horizontal-stretch: 1;
+
+            VerticalBox {
+                padding: Tokens.s-sm;
+                spacing: Tokens.s-xs;
+
+                Text {
+                    text: root.war-header;
+                    font-size: Tokens.f-aux;
+                    font-weight: 600;
+                    color: Tokens.c-gold;
+                }
+                Text {
+                    text: root.war-body;
+                    font-size: Tokens.f-aux;
+                    color: Tokens.c-dark-text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if !root.has-champion : Text {
+            text: "进入英雄选择后自动展示符文页";
+            font-size: Tokens.f-body;
+            horizontal-alignment: center;
+            color: Tokens.c-muted;
         }
 
         // Rune list
         if root.rune-status == "loading" : Text {
-            text: "Loading runes…";
-            font-size: 14px;
+            text: "符文加载中…";
+            font-size: Tokens.f-body;
             horizontal-alignment: center;
-            color: #888888;
+            color: Tokens.c-muted;
         }
 
         if root.rune-status == "error" : Text {
-            text: "Failed to load runes for this champion.";
-            font-size: 14px;
+            text: "符文数据加载失败";
+            font-size: Tokens.f-body;
             horizontal-alignment: center;
-            color: #cc3333;
+            color: Tokens.c-err;
         }
 
         if root.rune-status == "success" : ListView {
             for rune[index] in root.runes : Rectangle {
-                border-width: 1px;
-                border-color: #dddddd;
-                border-radius: 6px;
-                background: #fafafa;
-                height: 72px;
+                border-width: Tokens.border-hair;
+                border-color: Tokens.c-dark-border;
+                border-radius: Tokens.radius;
+                background: Tokens.c-dark-card;
+                height: Tokens.row-rune-item;
 
                 HorizontalBox {
-                    padding: 8px;
-                    spacing: 8px;
+                    padding: Tokens.s-sm;
+                    spacing: Tokens.s-sm;
                     alignment: stretch;
 
                     VerticalBox {
                         alignment: center;
-                        spacing: 2px;
+                        spacing: Tokens.s-xs;
 
                         Text {
                             text: rune.name != "" ? rune.name : rune.position;
-                            font-size: 14px;
+                            font-size: Tokens.f-body;
                             font-weight: 600;
+                            color: Tokens.c-dark-text;
                             overflow: elide;
                         }
 
                         HorizontalBox {
-                            spacing: 12px;
+                            spacing: Tokens.s-md;
                             Text {
-                                text: "Picks: " + rune.pick-count;
-                                font-size: 12px;
-                                color: #666666;
+                                text: "选用: " + rune.pick-count;
+                                font-size: Tokens.f-aux;
+                                color: Tokens.c-dark-secondary;
                             }
                             Text {
-                                text: "WR: " + rune.win-rate;
-                                font-size: 12px;
-                                color: #666666;
+                                text: "胜率: " + rune.win-rate;
+                                font-size: Tokens.f-aux;
+                                color: Tokens.c-dark-secondary;
                             }
                         }
 
                         Text {
                             text: rune.position;
-                            font-size: 11px;
-                            color: #999999;
+                            font-size: Tokens.f-mini;
+                            color: Tokens.c-dark-secondary;
                         }
                     }
 
                     VerticalBox {
                         alignment: center;
                         Button {
-                            text: "Apply";
+                            text: "应用";
                             clicked => {
                                 root.apply-rune-clicked(rune.index);
                             }
@@ -611,20 +1042,71 @@ export component RunesWindow inherits Window {
         // Apply rune feedback
         if root.apply-rune-status != "" : Text {
             text: root.apply-rune-status;
-            font-size: 13px;
+            font-size: Tokens.f-aux;
             horizontal-alignment: center;
-            color: #666666;
+            color: Tokens.c-dark-secondary;
         }
 
         // Close
         HorizontalBox {
             alignment: center;
             Button {
-                text: "Close";
+                text: "关闭";
                 clicked => {
                     root.close-requested();
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  MiniMatchWindow——对局中的置顶迷你窗(取代 overlay 大窗等非我们能力项)
+//  尺寸参照桌面助手通行规格 340x220, 只露对局摘要, 关闭后本局不重弹。
+// ---------------------------------------------------------------------------
+export component MiniMatchWindow inherits Window {
+    title: "对局摘要";
+    width: Tokens.win-mini-w;
+    height: Tokens.win-mini-h;
+    always-on-top: true;
+    // 对局中置顶显示, 与游戏全屏/无边框模式共存: 深金配色不刺眼
+    background: Tokens.c-dark-page;
+
+    in-out property <string> match-text: "";
+    in-out property <string> match-status: "对局中";
+
+    VerticalBox {
+        padding: Tokens.s-md;
+        spacing: Tokens.s-sm;
+
+        HorizontalBox {
+            spacing: Tokens.s-sm;
+            alignment: center;
+            height: Tokens.row-height;
+
+            Rectangle {
+                width: Tokens.status-dot;
+                height: Tokens.status-dot;
+                border-radius: Tokens.status-dot / 2;
+                background: Tokens.c-ok;
+            }
+            Text {
+                text: root.match-status;
+                font-size: Tokens.f-aux;
+                vertical-alignment: center;
+                color: Tokens.c-gold;
+            }
+        }
+
+        // TextEdit 不支持改前景色(跟随系统 Palette), 迷你窗用 Text + 换行
+        Text {
+            text: root.match-text;
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
+            font-size: Tokens.f-aux;
+            color: Tokens.c-dark-text;
+            wrap: word-wrap;
+            vertical-alignment: top;
         }
     }
 }

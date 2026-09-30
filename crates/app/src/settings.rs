@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
 pub struct Settings {
     /// Source identifiers the user has checked (e.g. ["op.gg", "u.gg"])
@@ -33,12 +33,40 @@ pub struct Settings {
     pub deepseek_reasoning_effort: String,
     #[serde(default = "default_ai_provider")]
     pub ai_provider: String,
+    #[serde(default)]
+    pub deepseek_web_risk_accepted: bool,
+    /// Automatically apply the best OP.GG rune page for the locked position.
+    #[serde(default)]
+    pub auto_apply_rune: bool,
+    /// Automatically write recommended item builds on champion lock-in.
+    #[serde(default)]
+    pub auto_apply_builds: bool,
+    /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
+    #[serde(default)]
+    pub reminder_tier: i32,
+    /// Show the always-on-top 340x220 mini match window while in game.
+    #[serde(default = "default_mini_live_window")]
+    pub mini_live_window: bool,
+    /// 固定窗口出现的显示器索引(-1 = 不固定, 跟随系统等默认行为)。
+    /// 手动配置, 不做自动跟随游戏屏——稳定优先。
+    #[serde(default = "default_pinned_monitor")]
+    pub pinned_monitor: i32,
     #[serde(default = "default_lmstudio_base_url")]
     pub lmstudio_base_url: String,
     #[serde(default = "default_lmstudio_model")]
     pub lmstudio_model: String,
     #[serde(default)]
     pub lmstudio_api_key: String,
+    /// LLM 通道: "maohou"(经 houmao 引擎子进程, 默认) / "direct"(直连 reqwest)。
+    #[serde(default = "default_ai_backend")]
+    pub ai_backend: String,
+    /// 显式指定 maohou 二进制路径(留空=自动: MAOHOU_BIN → 兄弟仓 → PATH)。
+    #[serde(default)]
+    pub maohou_bin: String,
+}
+
+fn default_ai_backend() -> String {
+    "maohou".to_string()
 }
 
 fn default_tts_volume() -> i32 {
@@ -77,11 +105,50 @@ fn default_lmstudio_model() -> String {
     "local-model".to_string()
 }
 
+fn default_mini_live_window() -> bool {
+    true
+}
+
+fn default_pinned_monitor() -> i32 {
+    -1
+}
+
 fn settings_path() -> PathBuf {
     let mut dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     dir.push("champr");
     dir.push("settings.toml");
     dir
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            selected_sources: Vec::new(),
+            rune_source: String::new(),
+            tts_rate: 0,
+            tts_volume: default_tts_volume(),
+            tts_voice: default_tts_voice(),
+            lol_launcher_path: default_lol_launcher_path(),
+            deepseek_api_key: String::new(),
+            deepseek_base_url: default_deepseek_base_url(),
+            deepseek_model: default_deepseek_model(),
+            deepseek_thinking: false,
+            deepseek_stream: false,
+            deepseek_reasoning_effort: default_deepseek_reasoning_effort(),
+            ai_provider: default_ai_provider(),
+            deepseek_web_risk_accepted: false,
+            auto_apply_rune: false,
+            auto_apply_builds: false,
+            reminder_tier: 0,
+            mini_live_window: default_mini_live_window(),
+            pinned_monitor: default_pinned_monitor(),
+            lmstudio_base_url: default_lmstudio_base_url(),
+            lmstudio_model: default_lmstudio_model(),
+            lmstudio_api_key: String::new(),
+            ai_backend: default_ai_backend(),
+            maohou_bin: String::new(),
+        }
+    }
 }
 
 impl Settings {
@@ -93,13 +160,7 @@ impl Settings {
                 settings.normalize_defaults();
                 settings
             }
-            Err(_) => Self {
-                tts_rate: 0,
-                tts_volume: default_tts_volume(),
-                tts_voice: default_tts_voice(),
-                lol_launcher_path: default_lol_launcher_path(),
-                ..Self::default()
-            },
+            Err(_) => Self::default(),
         }
     }
 
@@ -110,6 +171,19 @@ impl Settings {
         if self.lol_launcher_path.is_empty() {
             self.lol_launcher_path = default_lol_launcher_path();
         }
+        if self.deepseek_base_url.is_empty() {
+            self.deepseek_base_url = default_deepseek_base_url();
+        }
+        if self.deepseek_model.is_empty() {
+            self.deepseek_model = default_deepseek_model();
+        }
+        if !matches!(self.ai_provider.as_str(), "deepseek" | "deepseek_web" | "lmstudio") {
+            self.ai_provider = default_ai_provider();
+        }
+        if !matches!(self.ai_backend.as_str(), "maohou" | "direct") {
+            self.ai_backend = default_ai_backend();
+        }
+        self.reminder_tier = self.reminder_tier.clamp(0, 2);
     }
 
     pub fn save(&self) {
@@ -120,5 +194,19 @@ impl Settings {
         if let Ok(contents) = toml::to_string_pretty(self) {
             let _ = fs::write(&path, contents);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_include_working_ai_endpoints() {
+        let settings = Settings::default();
+        assert_eq!(settings.deepseek_base_url, "https://api.deepseek.com");
+        assert_eq!(settings.deepseek_model, "deepseek-v4-flash");
+        assert_eq!(settings.ai_provider, "deepseek");
+        assert!(!settings.deepseek_web_risk_accepted);
     }
 }

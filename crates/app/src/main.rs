@@ -13,6 +13,7 @@ use slint::{ComponentHandle, Image, ModelRc, SharedPixelBuffer, SharedString, Ve
 
 use lcu::{
     advisor,
+    browser_sidecar::BrowserSidecar,
     builds::Rune,
     cmd::{get_cmd_output, get_lcu_process_id},
     deepseek::{ChatMessage, DeepSeekClient, DeepSeekConfig},
@@ -25,6 +26,8 @@ use lcu::{
 };
 
 slint::include_modules!();
+mod game_screen;
+mod monitors;
 mod settings;
 
 #[allow(dead_code)]
@@ -57,6 +60,29 @@ struct AppState {
     current_champion_id: i64,
     /// Data Dragon champion id used as the backend alias (e.g. "Aatrox").
     current_champion_alias: String,
+    /// Local player's assigned lane in the current champ select (e.g. "middle").
+    current_assigned_position: String,
+    /// Auto-apply the position's best OP.GG rune page when the pick locks in.
+    auto_apply_rune: bool,
+    /// Auto-write recommended item builds when the pick locks in.
+    auto_apply_builds: bool,
+    /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
+    reminder_tier: i32,
+    /// Show the always-on-top mini match window while the game is in progress.
+    mini_live_enabled: bool,
+    /// 固定窗口出现的显示器索引(-1 = 不固定)。
+    pinned_monitor: i32,
+    /// 启动时枚举到的显示器列表(供固定与设置页展示)。
+    monitors: Vec<monitors::Monitor>,
+    /// 全英雄心理图谱(DDragon allytips/enemytips), 启动失败则为空图。
+    playbook: lcu::tips::PlaystyleAtlas,
+    /// Champion id that was already auto-applied this champ select.
+    last_auto_applied_champion: i64,
+    /// Latest counter-rule rune plan for the current matchup (None when not actionable).
+    counter_plan: Option<lcu::counter::RunePlan>,
+    /// User closed the runes window during this champ-select; do not re-open
+    /// it automatically until a new session starts.
+    runes_window_dismissed: bool,
     /// TTS voice configuration used by the advice loop.
     tts_config: tts::TtsConfig,
     /// User-configurable LoL launcher path.
@@ -67,6 +93,16 @@ struct AppState {
     llm_assistance_enabled: bool,
     /// AI provider: "deepseek" or "lmstudio".
     ai_provider: String,
+    /// LLM 通道: "maohou" 经 houmao 引擎子进程(默认) / "direct" 直连 reqwest。
+    ai_backend: String,
+    /// 显式 maohou 路径(空=自动定位: MAOHOU_BIN → 兄弟仓 → PATH)。
+    maohou_bin: String,
+    /// 命令行/CMDline bin 打开一次性的 fallback 提醒标记(避免每次调用都 warn)。
+    engine_fallback_warned: bool,
+    /// User acknowledgment required before browser automation starts.
+    deepseek_web_risk_accepted: bool,
+    /// Lazily started persistent browser sidecar.
+    deepseek_web: Option<Arc<BrowserSidecar>>,
     /// LM Studio local OpenAI-compatible config.
     lmstudio_config: DeepSeekConfig,
     /// Conversation history shared by automatic advice and the coach chat panel.
@@ -75,8 +111,16 @@ struct AppState {
     coach_last_prompt: String,
     /// Prevents overlapping coach chat requests.
     coach_busy: bool,
-    /// Cached Data Dragon item names used to enrich the live-game prompt.
-    item_names: HashMap<String, String>,
+    /// Serializes all AI calls, including automatic and manual requests.
+    coach_request_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Prevents overlapping speech playback.
+    speech_lock: Arc<Mutex<()>>,
+    /// Cached Data Dragon zh_CN static names (champions/runes/items) used to enrich prompts.
+    static_names: web::StaticNames,
+    /// Per-champion OP.GG sections cache (keyed by champion id) reused across prompts.
+    opgg_sections_cache: HashMap<i64, Vec<lcu::builds::BuildSection>>,
+    /// Ranked summary cache keyed by summoner id, fetched at most once per player.
+    ranked_stats_cache: HashMap<i64, String>,
     /// Stable identifier for the current match session.
     match_id: String,
     /// Current observed gameflow/live-client phase.
@@ -97,6 +141,17 @@ impl Default for AppState {
             current_runes: Vec::new(),
             current_champion_id: 0,
             current_champion_alias: String::new(),
+            current_assigned_position: String::new(),
+            auto_apply_rune: false,
+            auto_apply_builds: false,
+            reminder_tier: 0,
+            mini_live_enabled: true,
+            pinned_monitor: -1,
+            monitors: Vec::new(),
+            playbook: lcu::tips::PlaystyleAtlas::default(),
+            last_auto_applied_champion: 0,
+            counter_plan: None,
+            runes_window_dismissed: false,
             tts_config: tts::TtsConfig::default(),
             lol_launcher_path: r"C:\WeGameApps\英雄联盟（含经典模式）\WeGameLauncher\launcher.exe".to_string(),
             deepseek_config: DeepSeekConfig {
@@ -109,6 +164,11 @@ impl Default for AppState {
             },
             llm_assistance_enabled: false,
             ai_provider: "deepseek".to_string(),
+            ai_backend: "maohou".to_string(),
+            maohou_bin: String::new(),
+            engine_fallback_warned: false,
+            deepseek_web_risk_accepted: false,
+            deepseek_web: None,
             lmstudio_config: DeepSeekConfig {
                 api_key: String::new(),
                 base_url: "http://localhost:1234/v1".to_string(),
@@ -120,7 +180,11 @@ impl Default for AppState {
             coach_messages: Vec::new(),
             coach_last_prompt: String::new(),
             coach_busy: false,
-            item_names: HashMap::new(),
+            coach_request_lock: Arc::new(tokio::sync::Mutex::new(())),
+            speech_lock: Arc::new(Mutex::new(())),
+            static_names: web::StaticNames::default(),
+            opgg_sections_cache: HashMap::new(),
+            ranked_stats_cache: HashMap::new(),
             match_id: String::new(),
             match_phase: MatchPhase::Idle,
             last_progress_key: String::new(),
@@ -168,6 +232,7 @@ fn main() {
     let sources_window = SourcesWindow::new().unwrap();
     let runes_window = RunesWindow::new().unwrap();
     let tts_settings_window = TtsSettingsWindow::new().unwrap();
+    let mini_window = MiniMatchWindow::new().unwrap();
 
     let saved_settings = settings::Settings::load();
     let mut initial_state = AppState::default();
@@ -190,6 +255,16 @@ fn main() {
         stream_enabled: saved_settings.deepseek_stream,
     };
     initial_state.ai_provider = saved_settings.ai_provider.clone();
+    initial_state.ai_backend = saved_settings.ai_backend.clone();
+    initial_state.maohou_bin = saved_settings.maohou_bin.clone();
+    initial_state.deepseek_web_risk_accepted = saved_settings.deepseek_web_risk_accepted;
+    initial_state.auto_apply_rune = saved_settings.auto_apply_rune;
+    initial_state.auto_apply_builds = saved_settings.auto_apply_builds;
+    initial_state.reminder_tier = saved_settings.reminder_tier;
+    initial_state.mini_live_enabled = saved_settings.mini_live_window;
+    // 显示器固定: 手动配置, 启动时枚举一次; 插拔显示器后重启 app 生效。
+    initial_state.pinned_monitor = saved_settings.pinned_monitor;
+    initial_state.monitors = monitors::list_monitors();
     initial_state.lmstudio_config = DeepSeekConfig {
         api_key: saved_settings.lmstudio_api_key.clone(),
         base_url: saved_settings.lmstudio_base_url.clone(),
@@ -205,6 +280,7 @@ fn main() {
     tts_settings_window.set_tts_voice(SharedString::from(&saved_settings.tts_voice));
     tts_settings_window.set_lol_launcher_path(SharedString::from(&saved_settings.lol_launcher_path));
     tts_settings_window.set_deepseek_api_key(SharedString::from(&saved_settings.deepseek_api_key));
+    tts_settings_window.set_deepseek_base_url(SharedString::from(&saved_settings.deepseek_base_url));
     tts_settings_window.set_deepseek_model(SharedString::from(&saved_settings.deepseek_model));
     tts_settings_window.set_deepseek_thinking(saved_settings.deepseek_thinking);
     tts_settings_window.set_deepseek_stream(saved_settings.deepseek_stream);
@@ -212,9 +288,50 @@ fn main() {
         &saved_settings.deepseek_reasoning_effort,
     ));
     tts_settings_window.set_ai_provider(SharedString::from(&saved_settings.ai_provider));
+    tts_settings_window.set_ai_backend(SharedString::from(&saved_settings.ai_backend));
+    tts_settings_window.set_maohou_bin(SharedString::from(&saved_settings.maohou_bin));
+    // 引擎探测报告: 显式路径 > 自动定位 > "未找到将走直连"
+    {
+        let detected = if !saved_settings.maohou_bin.is_empty() {
+            let p = std::path::PathBuf::from(&saved_settings.maohou_bin);
+            if p.is_file() {
+                format!("引擎: {}(手动指定)", p.display())
+            } else {
+                format!("⚠ 指定的引擎路径不存在: {}", p.display())
+            }
+        } else if let Some(bin) = lcu::maohou::locate_binary() {
+            format!("引擎: {}(自动发现)", bin.display())
+        } else {
+            "未找到 maohou 引擎 —— 走直连备用通道; 安装 houmao-mac\\engine 后移除此行".to_string()
+        };
+        tts_settings_window.set_maohou_status(SharedString::from(detected));
+    }
+    tts_settings_window.set_deepseek_web_risk_accepted(saved_settings.deepseek_web_risk_accepted);
     tts_settings_window.set_lmstudio_base_url(SharedString::from(&saved_settings.lmstudio_base_url));
     tts_settings_window.set_lmstudio_model(SharedString::from(&saved_settings.lmstudio_model));
     tts_settings_window.set_lmstudio_api_key(SharedString::from(&saved_settings.lmstudio_api_key));
+    runes_window.set_auto_apply_enabled(saved_settings.auto_apply_rune);
+    runes_window.set_auto_builds_enabled(saved_settings.auto_apply_builds);
+    sources_window.set_reminder_tier(saved_settings.reminder_tier);
+    sources_window.set_mini_live_enabled(saved_settings.mini_live_window);
+
+    // 显示器下拉: "不固定" + 各显示器(枚举顺序即索引)
+    {
+        let s = state.lock().unwrap();
+        let mut items = vec![SharedString::from("不固定(跟随系统当前屏)")];
+        for m in &s.monitors {
+            items.push(SharedString::from(monitors::label(m)));
+        }
+        tts_settings_window.set_monitor_options(ModelRc::new(VecModel::from(items)));
+        let current = if saved_settings.pinned_monitor >= 0
+            && (saved_settings.pinned_monitor as usize) < s.monitors.len()
+        {
+            saved_settings.pinned_monitor + 1
+        } else {
+            0
+        };
+        tts_settings_window.set_pinned_monitor(current);
+    }
 
     // -- Apply Builds button --
     let state_c = state.clone();
@@ -379,9 +496,13 @@ fn main() {
     });
 
     let tts_window_for_open = tts_settings_window.as_weak();
-    sources_window.on_open_tts_settings_clicked(move || {
-        if let Some(win) = tts_window_for_open.upgrade() {
-            win.show().unwrap();
+    sources_window.on_open_tts_settings_clicked({
+        let state_pin = state.clone();
+        move || {
+            if let Some(win) = tts_window_for_open.upgrade() {
+                win.show().unwrap();
+                pin_window_to_monitor(win.window(), &state_pin, PinAnchor::Center);
+            }
         }
     });
 
@@ -442,9 +563,21 @@ fn main() {
                 }
             });
 
-            if let Err(err) = result {
-                let message = format!("System: Coach error: {err}");
-                append_system_log(&weak, &state, &message);
+            match result {
+                Ok(reply) => {
+                    let (tts_config, speech_lock) = {
+                        let state = state.lock().unwrap();
+                        (state.tts_config.clone(), state.speech_lock.clone())
+                    };
+                    tokio::task::spawn_blocking(move || {
+                        let _guard = speech_lock.lock().unwrap();
+                        let _ = tts::speak_windows_tts_with_config(&reply, &tts_config);
+                    });
+                }
+                Err(err) => {
+                    let message = format!("System: Coach error: {err}");
+                    append_system_log(&weak, &state, &message);
+                }
             }
         });
     });
@@ -517,6 +650,7 @@ fn main() {
 
     let tts_window_for_apply = tts_settings_window.as_weak();
     let tts_state_for_apply = state.clone();
+    let sources_weak_for_pin = sources_window.as_weak();
     tts_settings_window.on_apply_clicked(move || {
         let Some(win) = tts_window_for_apply.upgrade() else {
             return;
@@ -527,14 +661,20 @@ fn main() {
         let voice = win.get_tts_voice().to_string();
         let launcher_path = win.get_lol_launcher_path().to_string();
         let deepseek_api_key = win.get_deepseek_api_key().to_string();
+        let deepseek_base_url = win.get_deepseek_base_url().to_string();
         let deepseek_model = win.get_deepseek_model().to_string();
         let deepseek_thinking = win.get_deepseek_thinking();
         let deepseek_stream = win.get_deepseek_stream();
         let deepseek_reasoning_effort = win.get_deepseek_reasoning_effort().to_string();
         let ai_provider = win.get_ai_provider().to_string();
+        let ai_backend = win.get_ai_backend().to_string();
+        let maohou_bin = win.get_maohou_bin().to_string();
+        let deepseek_web_risk_accepted = win.get_deepseek_web_risk_accepted();
         let lmstudio_base_url = win.get_lmstudio_base_url().to_string();
         let lmstudio_model = win.get_lmstudio_model().to_string();
         let lmstudio_api_key = win.get_lmstudio_api_key().to_string();
+        // 下拉里 0 = "不固定", 实际显示器索引从 1 起
+        let pinned_monitor = win.get_pinned_monitor() - 1;
 
         {
             let mut state = tts_state_for_apply.lock().unwrap();
@@ -546,13 +686,21 @@ fn main() {
             state.lol_launcher_path = launcher_path.clone();
             state.deepseek_config = DeepSeekConfig {
                 api_key: deepseek_api_key.clone(),
-                base_url: "https://api.deepseek.com".to_string(),
+                base_url: if deepseek_base_url.is_empty() {
+                    "https://api.deepseek.com".to_string()
+                } else {
+                    deepseek_base_url.clone()
+                },
                 model: deepseek_model.clone(),
                 thinking_enabled: deepseek_thinking,
                 reasoning_effort: deepseek_reasoning_effort.clone(),
                 stream_enabled: deepseek_stream,
             };
             state.ai_provider = ai_provider.clone();
+            state.ai_backend = ai_backend.clone();
+            state.maohou_bin = maohou_bin.clone();
+            state.engine_fallback_warned = false;
+            state.deepseek_web_risk_accepted = deepseek_web_risk_accepted;
             state.lmstudio_config = DeepSeekConfig {
                 api_key: lmstudio_api_key.clone(),
                 base_url: lmstudio_base_url.clone(),
@@ -569,17 +717,56 @@ fn main() {
         settings.tts_voice = voice;
         settings.lol_launcher_path = launcher_path;
         settings.deepseek_api_key = deepseek_api_key;
+        settings.deepseek_base_url = deepseek_base_url;
         settings.deepseek_model = deepseek_model;
         settings.deepseek_thinking = deepseek_thinking;
         settings.deepseek_stream = deepseek_stream;
         settings.deepseek_reasoning_effort = deepseek_reasoning_effort;
         settings.ai_provider = ai_provider;
+        settings.ai_backend = ai_backend;
+        settings.maohou_bin = maohou_bin;
+        settings.deepseek_web_risk_accepted = deepseek_web_risk_accepted;
         settings.lmstudio_base_url = lmstudio_base_url;
         settings.lmstudio_model = lmstudio_model;
         settings.lmstudio_api_key = lmstudio_api_key;
+        settings.pinned_monitor = pinned_monitor;
         settings.save();
 
+        // 显示器固定立即生效: 重摆当前可见的主窗/设置窗(隐藏窗下次 show 时生效)
+        {
+            tts_state_for_apply.lock().unwrap().pinned_monitor = pinned_monitor;
+        }
+        let win_handle = win.window();
+        pin_window_to_monitor(win_handle, &tts_state_for_apply, PinAnchor::Center);
+        if let Some(main_win) = sources_weak_for_pin.upgrade() {
+            if main_win.window().is_visible() {
+                pin_window_to_monitor(main_win.window(), &tts_state_for_apply, PinAnchor::Center);
+            }
+        }
+
         win.hide().unwrap();
+    });
+
+    let web_login_window = tts_settings_window.as_weak();
+    let web_login_state = state.clone();
+    let web_login_handle = rt_handle_ref.clone();
+    tts_settings_window.on_open_deepseek_web_login_clicked(move || {
+        let weak = web_login_window.clone();
+        let state = web_login_state.clone();
+        web_login_handle.spawn(async move {
+            let status = match deepseek_web_sidecar(&state) {
+                Ok(sidecar) => match sidecar.open_login().await {
+                    Ok(status) => format!("状态: {}", status.state),
+                    Err(err) => format!("启动失败: {err}"),
+                },
+                Err(err) => format!("启动失败: {err}"),
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    win.set_deepseek_web_status(SharedString::from(status));
+                }
+            });
+        });
     });
 
     let tts_window_for_cancel = tts_settings_window.as_weak();
@@ -636,11 +823,15 @@ fn main() {
         }
     });
 
-    // -- Runes window: close --
+    // -- Runes window: close (marks this session as user-dismissed) --
     let runes_weak = runes_window.as_weak();
-    runes_window.on_close_requested(move || {
-        if let Some(win) = runes_weak.upgrade() {
-            win.hide().unwrap();
+    runes_window.on_close_requested({
+        let state_dismiss = state.clone();
+        move || {
+            state_dismiss.lock().unwrap().runes_window_dismissed = true;
+            if let Some(win) = runes_weak.upgrade() {
+                win.hide().unwrap();
+            }
         }
     });
 
@@ -686,6 +877,120 @@ fn main() {
         }
     });
 
+    // -- Runes window: one-click best rune for the current lane --
+    let runes_best_weak = runes_window.as_weak();
+    let state_best = state.clone();
+    let handle_best = rt_handle_ref.clone();
+    runes_window.on_apply_best_rune_clicked({
+        move || {
+            let (auth, champion_id, position) = {
+                let s = state_best.lock().unwrap();
+                (
+                    s.auth_url.clone(),
+                    s.current_champion_id,
+                    s.current_assigned_position.clone(),
+                )
+            };
+
+            if champion_id == 0 {
+                let weak = runes_best_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.set_apply_rune_status(SharedString::from("请先在客户端选择英雄"));
+                    }
+                });
+                return;
+            }
+
+            handle_best.spawn(apply_best_rune_for_position(
+                runes_best_weak.clone(),
+                auth,
+                champion_id,
+                position,
+                "",
+            ));
+        }
+    });
+
+    // -- Runes window: one-click counter-rule rune page --
+    let runes_counter_weak = runes_window.as_weak();
+    let state_counter = state.clone();
+    let handle_counter = rt_handle_ref.clone();
+    runes_window.on_apply_counter_rune_clicked({
+        move || {
+            let (auth, plan) = {
+                let s = state_counter.lock().unwrap();
+                (s.auth_url.clone(), s.counter_plan.clone())
+            };
+
+            if plan.is_none() {
+                let weak = runes_counter_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = weak.upgrade() {
+                        win.set_apply_rune_status(SharedString::from(
+                            "暂无Counter方案(需对位锁定且 counters 数据充足)",
+                        ));
+                    }
+                });
+                return;
+            }
+
+            handle_counter.spawn(apply_counter_rune_plan(
+                runes_counter_weak.clone(),
+                auth,
+                plan.unwrap(),
+                "[Counter] ",
+            ));
+        }
+    });
+
+    // -- Runes window: auto-apply toggle (persisted) --
+    let state_auto = state.clone();
+    runes_window.on_auto_apply_toggled(move |enabled| {
+        state_auto.lock().unwrap().auto_apply_rune = enabled;
+        let mut settings = settings::Settings::load();
+        settings.auto_apply_rune = enabled;
+        settings.save();
+    });
+
+    // -- Runes window: auto-builds toggle (persisted) --
+    let state_auto_builds = state.clone();
+    runes_window.on_auto_builds_toggled(move |enabled| {
+        state_auto_builds.lock().unwrap().auto_apply_builds = enabled;
+        let mut settings = settings::Settings::load();
+        settings.auto_apply_builds = enabled;
+        settings.save();
+    });
+
+    // -- Main window: objective reminder tier (persisted) --
+    let state_tier = state.clone();
+    sources_window.on_reminder_tier_changed(move |tier| {
+        let tier = tier.clamp(0, 2);
+        state_tier.lock().unwrap().reminder_tier = tier;
+        let mut settings = settings::Settings::load();
+        settings.reminder_tier = tier;
+        settings.save();
+    });
+
+    // -- Main window: mini live window toggle (persisted) --
+    let state_mini = state.clone();
+    let mini_weak_toggle = mini_window.as_weak();
+    sources_window.on_mini_live_toggled(move |enabled| {
+        state_mini.lock().unwrap().mini_live_enabled = enabled;
+        let mut settings = settings::Settings::load();
+        settings.mini_live_window = enabled;
+        settings.save();
+        // 立即生效: 关闭就藏; 打开时若正在对局, 下个生命周期 tick 会显示。
+        if !enabled {
+            let weak = mini_weak_toggle.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    win.hide().unwrap();
+                }
+            });
+        }
+    });
+
     // -- Spawn background tasks --
     let sources_weak2 = sources_window.as_weak();
     let state_c2 = state.clone();
@@ -702,15 +1007,48 @@ fn main() {
 
     let match_lifecycle_weak = sources_window.as_weak();
     let match_lifecycle_state = state.clone();
+    let match_lifecycle_mini = mini_window.as_weak();
     rt_handle.spawn(match_lifecycle_task(
         match_lifecycle_weak,
         match_lifecycle_state,
+        match_lifecycle_mini,
     ));
 
-    let item_state = state.clone();
+    // Live match panel in the main window (score/objectives/matchup, no LLM cost).
+    let panel_weak = sources_window.as_weak();
+    let panel_state = state.clone();
+    let panel_mini = mini_window.as_weak();
+    rt_handle.spawn(live_match_panel_task(panel_weak, panel_state, panel_mini));
+
+    // Event-driven objective reminders (first blood / monsters / spawn timers).
+    let reminder_weak = sources_window.as_weak();
+    let reminder_state = state.clone();
+    rt_handle.spawn(objective_reminder_task(reminder_weak, reminder_state));
+
+    let names_state = state.clone();
     rt_handle.spawn(async move {
-        if let Ok(names) = web::fetch_item_names().await {
-            item_state.lock().unwrap().item_names = names;
+        let names = web::fetch_static_names().await;
+        info!(
+            "static names loaded: {} champions, {} runes, {} items",
+            names.champions_cn.len(),
+            names.runes_cn.len(),
+            names.items_cn.len()
+        );
+        names_state.lock().unwrap().static_names = names;
+    });
+
+    // 对位心理图谱: DDragon championFull.json (zh_CN) 单请求全英雄。
+    // 失败为空图 = 心理卡自动隐藏, 不阻塞其他功能。
+    let playbook_state = state.clone();
+    rt_handle.spawn(async move {
+        match lcu::tips::fetch_playstyle_atlas().await {
+            Ok(atlas) => {
+                info!("playstyle atlas loaded: {} champions", atlas.champions.len());
+                playbook_state.lock().unwrap().playbook = atlas;
+            }
+            Err(_) => {
+                warn!("playstyle atlas fetch failed; 对位心理卡不可用");
+            }
         }
     });
 
@@ -758,6 +1096,8 @@ fn main() {
 
     // -- Show sources window and run event loop --
     sources_window.show().unwrap();
+    // 手动固定的显示器(在 show 之后才有 size())
+    pin_window_to_monitor(sources_window.window(), &state, PinAnchor::Center);
     slint::run_event_loop().unwrap();
 }
 
@@ -766,8 +1106,8 @@ fn main() {
 // ---------------------------------------------------------------------------
 
 async fn fetch_sources_task(sources_weak: Weak<SourcesWindow>, state: SharedState) {
-    match web::init_for_ui().await {
-        Ok((champions_map, _runes_meta)) => {
+    match web::fetch_champion_list().await {
+        Ok(champions_map) => {
             // Store champions map in shared state
             {
                 let mut s = state.lock().unwrap();
@@ -821,6 +1161,10 @@ async fn lcu_monitor_task(
                     s.is_tencent = false;
                     s.current_champion_id = 0;
                     s.current_champion_alias.clear();
+                    s.current_assigned_position.clear();
+                    s.last_auto_applied_champion = 0;
+                    s.counter_plan = None;
+                    s.runes_window_dismissed = false;
                 }
 
                 let sw = sources_weak.clone();
@@ -855,6 +1199,8 @@ async fn lcu_monitor_task(
                 s.is_tencent = false;
                 s.current_champion_id = 0;
                 s.current_champion_alias.clear();
+                s.current_assigned_position.clear();
+                s.last_auto_applied_champion = 0;
             }
 
             let sw = sources_weak.clone();
@@ -968,6 +1314,10 @@ async fn lcu_monitor_task(
                                             let mut s = state.lock().unwrap();
                                             s.current_champion_id = 0;
                                             s.current_champion_alias.clear();
+                                            s.current_assigned_position.clear();
+                                            s.last_auto_applied_champion = 0;
+                                            s.counter_plan = None;
+                                            s.runes_window_dismissed = false;
                                         }
                                         let rw = runes_weak.clone();
                                         let _ = slint::invoke_from_event_loop(move || {
@@ -984,6 +1334,141 @@ async fn lcu_monitor_task(
                                 // Extract champion ID from session data
                                 let session_data = data.and_then(|v| v.get("data"));
                                 let cid = extract_champion_id_from_session(session_data);
+
+                                // Keep the local lane in sync so rune suggestions stay matchup-aware.
+                                let assigned_position =
+                                    extract_assigned_position_from_session(session_data);
+                                {
+                                    let mut s = state.lock().unwrap();
+                                    s.current_assigned_position = assigned_position.clone();
+                                }
+
+                                // Locked-in pick: optionally auto-apply runes and/or
+                                // write recommended item builds, once per champion.
+                                let locked_cid =
+                                    extract_locked_champion_id_from_session(session_data);
+                                if locked_cid > 0 {
+                                    let (auto_rune, auto_builds, already_applied, auth, lol_dir, is_tencent) = {
+                                        let s = state.lock().unwrap();
+                                        (
+                                            s.auto_apply_rune,
+                                            s.auto_apply_builds,
+                                            s.last_auto_applied_champion == locked_cid,
+                                            s.auth_url.clone(),
+                                            s.lol_dir.clone(),
+                                            s.is_tencent,
+                                        )
+                                    };
+                                    if !already_applied {
+                                        let mut armed = false;
+                                        if auto_rune && !auth.is_empty() {
+                                            armed = true;
+                                            // Prefer the local counter-rule plan when the
+                                            // lane opponent is identifiable; plain OP.GG
+                                            // best is the fallback (blind pick etc.).
+                                            let plan = {
+                                                let s = state.lock().unwrap();
+                                                compute_counter_plan(session_data, &s)
+                                            };
+                                            if let Some(plan) = plan {
+                                                state.lock().unwrap().counter_plan =
+                                                    Some(plan.clone());
+                                                info!(
+                                                    "auto-applying counter rune for {locked_cid}: {}",
+                                                    plan.line
+                                                );
+                                                tokio::spawn(apply_counter_rune_plan(
+                                                    runes_weak.clone(),
+                                                    auth.clone(),
+                                                    plan,
+                                                    "[自动·Counter] ",
+                                                ));
+                                            } else {
+                                                info!("auto-applying rune for locked champion {locked_cid} ({assigned_position})");
+                                                tokio::spawn(apply_best_rune_for_position(
+                                                    runes_weak.clone(),
+                                                    auth.clone(),
+                                                    locked_cid,
+                                                    assigned_position.clone(),
+                                                    "[自动] ",
+                                                ));
+                                            }
+                                        }
+                                        if auto_builds && !lol_dir.is_empty() {
+                                            armed = true;
+                                            info!("auto-writing item builds for locked champion {locked_cid}");
+                                            tokio::spawn(auto_write_builds(
+                                                sources_weak.clone(),
+                                                lol_dir,
+                                                is_tencent,
+                                                locked_cid,
+                                            ));
+                                        }
+                                        if armed {
+                                            state.lock().unwrap().last_auto_applied_champion =
+                                                locked_cid;
+                                        }
+                                    }
+                                }
+
+                                // Refresh the local counter-rune plan whenever the
+                                // champ-select session changes (hover / opponent pick)
+                                // and publish it to the runes window.
+                                let (plan_available, plan_summary, plan_newly_available, intel_header, intel_body, war_header, war_body) = {
+                                    let mut s = state.lock().unwrap();
+                                    let plan = compute_counter_plan(session_data, &s);
+                                    let summary = plan.as_ref().map(|p| {
+                                        let mut text = p.line.clone();
+                                        if !p.diffs.is_empty() {
+                                            text.push_str(&format!(
+                                                "\n差异: {}",
+                                                p.diffs.join("; ")
+                                            ));
+                                        }
+                                        if let Some(reason) = p.reasons.first() {
+                                            text.push_str(&format!("\n理由: {reason}"));
+                                        }
+                                        text
+                                    });
+                                    let (ih, ib) = compute_opponent_intel(session_data, &s)
+                                        .map(|(h, b)| (h, b))
+                                        .unwrap_or_default();
+                                    let (wh, wb) = compute_war_text(session_data, &s)
+                                        .map(|(h, b)| (h, b))
+                                        .unwrap_or_default();
+                                    let previously = s.counter_plan.is_some();
+                                    let available = plan.is_some();
+                                    let newly = available && !previously;
+                                    s.counter_plan = plan;
+                                    (available, summary, newly, ih, ib, wh, wb)
+                                };
+                                {
+                                    let rw = runes_weak.clone();
+                                    let _ = slint::invoke_from_event_loop(move || {
+                                        if let Some(win) = rw.upgrade() {
+                                            win.set_counter_available(plan_available);
+                                            win.set_counter_summary(SharedString::from(
+                                                plan_summary.unwrap_or_default(),
+                                            ));
+                                            win.set_opponent_header(SharedString::from(
+                                                intel_header,
+                                            ));
+                                            win.set_opponent_intel(SharedString::from(intel_body));
+                                            win.set_war_header(SharedString::from(war_header));
+                                            win.set_war_body(SharedString::from(war_body));
+                                            // Signal the moment a counter plan first
+                                            // becomes actionable (e.g. opponent locked
+                                            // after our auto-apply already did its pass).
+                                            if plan_newly_available {
+                                                win.set_apply_rune_status(
+                                                    SharedString::from(
+                                                        "对位已确认: 可应用 Counter 符文(见摘要)",
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    });
+                                }
 
                                 if cid != current_champion_id && cid > 0 {
                                     current_champion_id = cid;
@@ -1103,14 +1588,293 @@ fn append_info_log(weak: &Weak<SourcesWindow>, state: &SharedState, text: &str) 
     }
 }
 
+fn deepseek_web_sidecar(state: &SharedState) -> anyhow::Result<Arc<BrowserSidecar>> {
+    let mut state = state.lock().unwrap();
+    if let Some(sidecar) = &state.deepseek_web {
+        return Ok(sidecar.clone());
+    }
+    if !state.deepseek_web_risk_accepted {
+        anyhow::bail!("请先在设置中确认 DeepSeek Web 实验功能风险");
+    }
+    let sidecar = Arc::new(BrowserSidecar::discover()?);
+    state.deepseek_web = Some(sidecar.clone());
+    Ok(sidecar)
+}
+
+async fn chat_with_selected_provider(
+    state: &SharedState,
+    messages: Vec<ChatMessage>,
+) -> anyhow::Result<String> {
+    let request_lock = {
+        let state = state.lock().unwrap();
+        state.coach_request_lock.clone()
+    };
+    let _request_guard = request_lock.lock().await;
+    let (provider, deepseek_config, lmstudio_config, backend, maohou_bin_setting) = {
+        let state = state.lock().unwrap();
+        (
+            state.ai_provider.clone(),
+            state.deepseek_config.clone(),
+            state.lmstudio_config.clone(),
+            state.ai_backend.clone(),
+            state.maohou_bin.clone(),
+        )
+    };
+    if provider == "deepseek_web" {
+        return deepseek_web_sidecar(state)?.chat_messages(messages).await;
+    }
+    let config = if provider == "lmstudio" {
+        lmstudio_config
+    } else {
+        if deepseek_config.api_key.is_empty() {
+            anyhow::bail!("DeepSeek API Key is not configured");
+        }
+        deepseek_config
+    };
+
+    // LLM 通道: 优先 houmao 引擎子进程(与 houmao-mac 共用引擎实现对齐功能);
+    // 二进制缺失 → 一次性 warn 后降级直连 reqwest(可用性优先, 见 analyzer wave1)。
+    // 引擎调用失败原样上抛(不双请求双扣)。
+    if backend == "maohou" {
+        let bin = if !maohou_bin_setting.is_empty() {
+            let p = std::path::PathBuf::from(&maohou_bin_setting);
+            p.is_file().then_some(p)
+        } else {
+            lcu::maohou::locate_binary()
+        };
+        match bin {
+            Some(bin) => {
+                let target = if provider == "lmstudio" {
+                    lcu::maohou::MaohouTarget::for_lmstudio(
+                        &config.base_url,
+                        &config.model,
+                        &config.api_key,
+                    )
+                } else {
+                    lcu::maohou::MaohouTarget::for_deepseek(&config)
+                };
+                return lcu::maohou::chat(&bin, &target, &messages)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("maohou 调用失败(provider={provider}): {e:#}"));
+            }
+            None => {
+                let mut s = state.lock().unwrap();
+                if !s.engine_fallback_warned {
+                    s.engine_fallback_warned = true;
+                    warn!(
+                        "maohou 引擎二进制未找到(MAOHOU_BIN/兄弟仓/PATH 均无果), \
+                         本次起直连 reqwest; 可安装 houmao-mac/engine 或在设置中指定路径"
+                    );
+                    s.ui_log
+                        .push_str("[提示] 未找到 maohou 引擎二进制, LLM 走直连 reqwest(备用通道)。\n\n");
+                }
+            }
+        }
+    }
+    DeepSeekClient::new(config).chat_messages(messages).await
+}
+
+/// Persist the freshly built prompt so follow-up coach questions can reuse it.
+fn remember_prompt(state: &SharedState, prompt: &str) {
+    let mut s = state.lock().unwrap();
+    s.coach_last_prompt = prompt.to_string();
+    s.last_progress_key = prompt.to_string();
+}
+
+/// Write raw interface snapshots to `.cache/` for debugging
+/// (enabled with `CHAMPR_DUMP_SNAPSHOTS=1`).
+async fn dump_snapshot(tag: &str, data: &Value) {
+    if std::env::var("CHAMPR_DUMP_SNAPSHOTS").ok().as_deref() != Some("1") {
+        return;
+    }
+    let Ok(pretty) = lcu::serde_json::to_string_pretty(data) else {
+        return;
+    };
+    let dir = std::path::Path::new(".cache");
+    if tokio::fs::create_dir_all(dir).await.is_err() {
+        return;
+    }
+    let _ = tokio::fs::write(dir.join(format!("{tag}.json")), pretty).await;
+}
+
+/// Resolve the local player's champion id in a live game via the Data Dragon map.
+fn live_local_champion_id(game_data: &Value, champions: &ChampionsMap) -> i64 {
+    let Ok(snapshot) = lcu::match_context::LiveSnapshot::from_all_game_data(game_data) else {
+        return 0;
+    };
+    let Some(local) = snapshot.local_player() else {
+        return 0;
+    };
+    champions
+        .values()
+        .find(|c| c.name == local.champion_name || c.id == local.champion_name)
+        .and_then(|c| c.key.parse::<i64>().ok())
+        .unwrap_or(0)
+}
+
+/// Fetch and cache OP.GG build sections for the given champions (skips cached ones).
+async fn ensure_opgg_sections(state: &SharedState, champion_ids: &[i64]) {
+    let missing: Vec<i64> = {
+        let s = state.lock().unwrap();
+        champion_ids
+            .iter()
+            .copied()
+            .filter(|id| *id > 0 && !s.opgg_sections_cache.contains_key(id))
+            .collect()
+    };
+    if missing.is_empty() {
+        return;
+    }
+
+    let source = DEFAULT_SOURCE_VALUE.to_string();
+    let fetched = futures_util::future::join_all(missing.iter().map(|id| {
+        let source = source.clone();
+        async move { (*id, web::list_builds_by_id(&source, *id).await) }
+    }))
+    .await;
+
+    let mut s = state.lock().unwrap();
+    for (id, result) in fetched {
+        if let Ok(sections) = result {
+            if !sections.is_empty() {
+                s.opgg_sections_cache.insert(id, sections);
+            }
+        }
+    }
+}
+
+fn rank_tier_zh(tier: &str) -> String {
+    match tier.to_ascii_uppercase().as_str() {
+        "IRON" => "坚韧黑铁",
+        "BRONZE" => "英勇黄铜",
+        "SILVER" => "不屈白银",
+        "GOLD" => "荣耀黄金",
+        "PLATINUM" => "华贵铂金",
+        "EMERALD" => "流光翡翠",
+        "DIAMOND" => "璀璨钻石",
+        "MASTER" => "超凡大师",
+        "GRANDMASTER" => "傲世宗师",
+        "CHALLENGER" => "最强王者",
+        other => other,
+    }
+    .to_string()
+}
+
+fn format_ranked_stats(stats: &Value) -> Option<String> {
+    let solo = stats.get("queueMap")?.get("RANKED_SOLO_5x5")?;
+    let tier = solo.get("tier").and_then(Value::as_str).unwrap_or("");
+    if tier.is_empty() || tier.eq_ignore_ascii_case("NONE") {
+        return None;
+    }
+    let division = solo.get("division").and_then(Value::as_str).unwrap_or("");
+    let lp = solo.get("leaguePoints").and_then(Value::as_i64).unwrap_or(0);
+    let wins = solo.get("wins").and_then(Value::as_i64).unwrap_or(0);
+    let losses = solo.get("losses").and_then(Value::as_i64).unwrap_or(0);
+    Some(format!(
+        "单双{}{}{}{}{}",
+        rank_tier_zh(tier),
+        division,
+        if lp > 0 { format!(" {lp}胜点") } else { String::new() },
+        if wins > 0 { format!(" {wins}胜") } else { String::new() },
+        if losses > 0 { format!("{losses}负") } else { String::new() },
+    ))
+}
+
+/// Resolve one summoner's solo queue rank text (best effort).
+async fn lookup_rank_text(endpoint: &str, summoner_id: i64) -> Option<String> {
+    let summoner = lcu_api::get_summoner_by_id(endpoint, summoner_id).await.ok()?;
+    let puuid = summoner
+        .get("puuid")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|puuid| !puuid.is_empty())?;
+    let stats = lcu_api::get_ranked_stats(endpoint, &puuid).await.ok()?;
+    format_ranked_stats(&stats)
+}
+
+/// Build the champ-select prompt enriched with rune page, ranks and OP.GG stats.
+async fn build_champ_select_prompt(
+    state: &SharedState,
+    endpoint: &str,
+    session: &Value,
+    champions_map: &ChampionsMap,
+    static_names: &web::StaticNames,
+) -> anyhow::Result<String> {
+    let snapshot = lcu::match_context::ChampSelectSnapshot::from_session(session)?;
+
+    // 1) The local player's currently equipped rune page (best effort).
+    let rune_page = lcu_api::get_current_rune_page(endpoint).await.ok();
+
+    // 2) Solo queue ranks for every visible teammate/opponent (cached per summoner).
+    let to_lookup: Vec<i64> = {
+        let s = state.lock().unwrap();
+        let known = &s.ranked_stats_cache;
+        let ids: std::collections::HashSet<i64> = snapshot
+            .my_team
+            .iter()
+            .chain(snapshot.their_team.iter())
+            .map(|member| member.summoner_id)
+            .filter(|id| *id > 0)
+            .collect();
+        ids.into_iter().filter(|id| !known.contains_key(id)).collect()
+    };
+    if !to_lookup.is_empty() {
+        let endpoint_owned = endpoint.to_string();
+        let fetched = futures_util::future::join_all(to_lookup.into_iter().map(|summoner_id| {
+            let endpoint = endpoint_owned.clone();
+            async move { (summoner_id, lookup_rank_text(&endpoint, summoner_id).await) }
+        }))
+        .await;
+
+        let mut s = state.lock().unwrap();
+        for (summoner_id, text) in fetched {
+            if let Some(text) = text {
+                s.ranked_stats_cache.insert(summoner_id, text);
+            }
+        }
+    }
+
+    // 3) OP.GG sections for every locked/hovered champion so the advisor can do
+    //    matchup analysis and targeted rune comparison.
+    let champion_ids: Vec<i64> = {
+        let ids: std::collections::HashSet<i64> = snapshot
+            .my_team
+            .iter()
+            .chain(snapshot.their_team.iter())
+            .map(|member| member.effective_champion())
+            .filter(|id| *id > 0)
+            .collect();
+        ids.into_iter().collect()
+    };
+    ensure_opgg_sections(state, &champion_ids).await;
+
+    let (ranks, sections_map, atlas) = {
+        let s = state.lock().unwrap();
+        (
+            s.ranked_stats_cache.clone(),
+            s.opgg_sections_cache.clone(),
+            s.playbook.clone(),
+        )
+    };
+
+    advisor::build_lineup_prompt(
+        session,
+        champions_map,
+        static_names,
+        rune_page.as_ref(),
+        &ranks,
+        &sections_map,
+        &atlas,
+    )
+}
+
 async fn build_current_coach_prompt(state: &SharedState) -> Option<String> {
-    let (auth_url, champions_map, item_names, local_champion_id, last_prompt) = {
+    let (auth_url, champions_map, static_names, last_prompt) = {
         let s = state.lock().unwrap();
         (
             s.auth_url.clone(),
             s.champions_map.clone(),
-            s.item_names.clone(),
-            s.current_champion_id,
+            s.static_names.clone(),
             s.coach_last_prompt.clone(),
         )
     };
@@ -1120,60 +1884,62 @@ async fn build_current_coach_prompt(state: &SharedState) -> Option<String> {
     }
 
     let endpoint = format!("https://{auth_url}");
-    let mut live_data_available = false;
-    let live_prompt = match live_client::fetch_all_game_data().await {
-        Ok(game_data) => {
-            live_data_available = true;
-            match advisor::build_live_game_prompt(&game_data, &item_names) {
-                Ok(prompt) => Some(prompt),
-                Err(_) => None,
-            }
-        }
-        Err(_) => None,
-    };
 
-    let mut prompt = if let Some(prompt) = live_prompt {
-        prompt
-    } else {
-        match lcu_api::get_champ_select_session(&endpoint).await {
-            Ok(session) => match advisor::build_lineup_prompt(&session, &champions_map) {
-                Ok(prompt) => prompt,
-                Err(_) => last_prompt.clone(),
-            },
-            Err(_) => last_prompt.clone(),
-        }
-    };
+    // 1) In-game: full Live Client Data (players' KDA/CS/runes/spells/items,
+    //    active player's gold/abilities/stats, objective events, kill feed).
+    if let Ok(game_data) = live_client::fetch_all_game_data().await {
+        dump_snapshot("live-allgamedata", &game_data).await;
 
-    if prompt.is_empty() {
-        return None;
+        let local_champion_id = live_local_champion_id(&game_data, &champions_map);
+        if local_champion_id > 0 {
+            ensure_opgg_sections(state, &[local_champion_id]).await;
+        }
+        let (sections_map, atlas) = {
+            let s = state.lock().unwrap();
+            (s.opgg_sections_cache.clone(), s.playbook.clone())
+        };
+
+        if let Ok(prompt) = advisor::build_live_game_prompt(
+            &game_data,
+            &champions_map,
+            &static_names,
+            Some(&sections_map),
+            local_champion_id,
+            &atlas,
+        ) {
+            remember_prompt(state, &prompt);
+            return Some(prompt);
+        }
     }
 
-    if !live_data_available {
-        prompt = format!("当前无 Live Client Data，可能对局已结束或不在对局中\n\n{prompt}");
-    }
-
-    if local_champion_id > 0 {
-        if let Ok(sections) =
-            web::list_builds_by_id(&DEFAULT_SOURCE_VALUE.to_string(), local_champion_id).await
+    // 2) Champ select: bans, teams, lane opponent, current rune page, ranks, OP.GG.
+    if let Ok(session) = lcu_api::get_champ_select_session(&endpoint).await {
+        dump_snapshot("champ-select-session", &session).await;
+        if let Ok(prompt) =
+            build_champ_select_prompt(state, &endpoint, &session, &champions_map, &static_names).await
         {
-            let build_titles = sections
-                .iter()
-                .flat_map(|section| section.item_builds.iter().map(|build| build.title.clone()))
-                .collect::<Vec<_>>()
-                .join("; ");
-            if !build_titles.is_empty() {
-                prompt = format!("{prompt}\nCurrent champion recommended builds: {build_titles}");
-            }
+            let prompt = format!("当前无 Live Client Data，可能未进入对局\n\n{prompt}");
+            remember_prompt(state, &prompt);
+            return Some(prompt);
         }
     }
 
-    {
-        let mut s = state.lock().unwrap();
-        s.coach_last_prompt = prompt.clone();
-        s.last_progress_key = prompt.clone();
+    // 3) Gameflow fallback: at least report both teams' champions.
+    if let Ok(session) = lcu_api::get_gameflow_session(&endpoint).await {
+        if let Ok(prompt) = advisor::build_gameflow_prompt(&session, &champions_map, &static_names) {
+            let prompt = format!("当前无 Live Client Data，可能未进入对局\n\n{prompt}");
+            remember_prompt(state, &prompt);
+            return Some(prompt);
+        }
     }
 
-    Some(prompt)
+    if !last_prompt.is_empty() {
+        return Some(format!(
+            "当前无 Live Client Data，可能对局已结束或不在对局中\n\n{last_prompt}"
+        ));
+    }
+
+    None
 }
 
 async fn send_coach_message(
@@ -1191,13 +1957,10 @@ async fn send_coach_message(
         });
     }
 
-    let (auth_url, deepseek_config, lmstudio_config, ai_provider, history) = {
+    let (auth_url, history) = {
         let s = state.lock().unwrap();
         (
             s.auth_url.clone(),
-            s.deepseek_config.clone(),
-            s.lmstudio_config.clone(),
-            s.ai_provider.clone(),
             s.coach_messages.clone(),
         )
     };
@@ -1206,16 +1969,6 @@ async fn send_coach_message(
         anyhow::bail!("League Client is not connected");
     }
 
-    let llm_config = if ai_provider == "lmstudio" {
-        lmstudio_config
-    } else {
-        deepseek_config
-    };
-    if ai_provider != "lmstudio" && llm_config.api_key.is_empty() {
-        anyhow::bail!("DeepSeek API Key is not configured");
-    }
-
-    let client = DeepSeekClient::new(llm_config);
     let context = build_current_coach_prompt(state).await;
 
     let mut messages = vec![ChatMessage::system(advisor::DEFAULT_SYSTEM_PROMPT)];
@@ -1235,7 +1988,7 @@ async fn send_coach_message(
     }
     append_coach_message(weak, state, "user", &input);
 
-    let advice = client.chat_messages(messages).await?;
+    let advice = chat_with_selected_provider(state, messages).await?;
 
     append_coach_message(weak, state, "assistant", &advice);
 
@@ -1245,11 +1998,12 @@ async fn send_coach_message(
 async fn greet_coach(weak: Weak<SourcesWindow>, state: SharedState) {
     match send_coach_message(&weak, &state, "hi".to_string()).await {
         Ok(reply) => {
-            let tts_config = {
+            let (tts_config, speech_lock) = {
                 let s = state.lock().unwrap();
-                s.tts_config.clone()
+                (s.tts_config.clone(), s.speech_lock.clone())
             };
             tokio::task::spawn_blocking(move || {
+                let _guard = speech_lock.lock().unwrap();
                 let _ = tts::speak_windows_tts_with_config(&reply, &tts_config);
             });
         }
@@ -1331,8 +2085,140 @@ fn match_phase_label(phase: &MatchPhase) -> &'static str {
     }
 }
 
-async fn match_lifecycle_task(weak: Weak<SourcesWindow>, state: SharedState) {
+/// Polls the open client interfaces every few seconds and renders the compact
+/// match panel text for the main window (no LLM involved).
+async fn live_match_panel_task(
+    weak: Weak<SourcesWindow>,
+    state: SharedState,
+    mini_weak: Weak<MiniMatchWindow>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_millis(2500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_text = String::new();
+
+    loop {
+        interval.tick().await;
+
+        let (auth_url, champions_map, static_names, ranks, sections_map) = {
+            let s = state.lock().unwrap();
+            (
+                s.auth_url.clone(),
+                s.champions_map.clone(),
+                s.static_names.clone(),
+                s.ranked_stats_cache.clone(),
+                s.opgg_sections_cache.clone(),
+            )
+        };
+
+        let mut text = String::new();
+        if !auth_url.is_empty() {
+            let endpoint = format!("https://{auth_url}");
+            if let Ok(game_data) = live_client::fetch_all_game_data().await {
+                if let Ok(rendered) =
+                    advisor::build_live_panel_text(&game_data, &champions_map, &static_names)
+                {
+                    text = rendered;
+                }
+            }
+            if text.is_empty() {
+                if let Ok(session) = lcu_api::get_champ_select_session(&endpoint).await {
+                    if let Ok(rendered) = advisor::build_champ_select_panel_text(
+                        &session,
+                        &champions_map,
+                        &static_names,
+                        &ranks,
+                        &sections_map,
+                    ) {
+                        text = rendered;
+                    }
+                }
+            }
+        }
+
+        if text != last_text {
+            last_text = text.clone();
+            let weak = weak.clone();
+            let mini = mini_weak.clone();
+            let text_for_main = text.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    win.set_live_match_text(SharedString::from(text_for_main));
+                }
+                if let Some(win) = mini.upgrade() {
+                    win.set_match_text(SharedString::from(text));
+                }
+            });
+        }
+    }
+}
+
+/// Speaks short template reminders for objective events and spawn timers while
+/// the match-assistance toggle is on. Live data is polled cheaply every 5s.
+async fn objective_reminder_task(weak: Weak<SourcesWindow>, state: SharedState) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut engine = advisor::ReminderEngine::new();
+
+    loop {
+        interval.tick().await;
+
+        let (auth_url, enabled, champions_map, static_names, tts_config, speech_lock, tier) = {
+            let s = state.lock().unwrap();
+            (
+                s.auth_url.clone(),
+                s.llm_assistance_enabled,
+                s.champions_map.clone(),
+                s.static_names.clone(),
+                s.tts_config.clone(),
+                s.speech_lock.clone(),
+                s.reminder_tier,
+            )
+        };
+
+        if !enabled || auth_url.is_empty() {
+            continue;
+        }
+
+        let Ok(game_data) = live_client::fetch_all_game_data().await else {
+            engine.reset();
+            continue;
+        };
+        let Ok(snapshot) = lcu::match_context::LiveSnapshot::from_all_game_data(&game_data) else {
+            continue;
+        };
+
+        for reminder in engine.collect(&snapshot, &champions_map, &static_names) {
+            // Tier 1 keeps only key events (first blood / dragons / baron).
+            if tier == 1 && reminder.kind != advisor::ReminderKind::EventKey {
+                continue;
+            }
+            info!("objective reminder: {}", reminder.text);
+            append_system_log(&weak, &state, &format!("提醒: {}", reminder.text));
+            // Tier 2 = quiet: log only, no voice.
+            if tier == 2 {
+                continue;
+            }
+            let tts_config = tts_config.clone();
+            let speech_lock = speech_lock.clone();
+            let text = reminder.text;
+            tokio::task::spawn_blocking(move || {
+                let _guard = speech_lock.lock().unwrap();
+                let _ = tts::speak_windows_tts_with_config(&text, &tts_config);
+            });
+        }
+    }
+}
+
+async fn match_lifecycle_task(
+    weak: Weak<SourcesWindow>,
+    state: SharedState,
+    mini_weak: Weak<MiniMatchWindow>,
+) {
     let mut last_session_label = String::new();
+    // Drives the mini live window per phase: shown once on entering InProgress
+    // (user may close it for the rest of the game), hidden the moment the
+    // game leaves InProgress.
+    let mut mini_shown_this_game = false;
 
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1391,22 +2277,84 @@ async fn match_lifecycle_task(weak: Weak<SourcesWindow>, state: SharedState) {
             });
             last_session_label = label.to_string();
         }
+
+        // Mini live window orchestration (research baseline: 对局中默认只留
+        // 一个置顶迷你窗, 阶段结束自动收起)。
+        let current_phase = {
+            let s = state.lock().unwrap();
+            s.match_phase.clone()
+        };
+        let mini_enabled = {
+            let s = state.lock().unwrap();
+            s.mini_live_enabled
+        };
+        if current_phase == MatchPhase::InProgress && !mini_shown_this_game {
+            mini_shown_this_game = true;
+            if mini_enabled {
+                // 铁律: 游戏必须完整独占它自己的屏。迷你窗只落在"非游戏屏";
+                // 单屏 / TF识别不到游戏窗口 → 本局不弹(信息走 TTS 与主窗)。
+                let mons = {
+                    let s = state.lock().unwrap();
+                    s.monitors.clone()
+                };
+                let found = game_screen::game_screen_and_hwnd(&mons);
+                let target = monitors::mini_target(&mons, found.map(|(idx, _)| idx));
+                match (target, found) {
+                    (Some(mi), Some((_, game_hwnd))) => {
+                        let monitor = mons.iter().find(|m| m.index == mi).cloned();
+                        let mini = mini_weak.clone();
+                        let status = label.to_string();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let (Some(win), Some(m)) = (mini.upgrade(), monitor) {
+                                win.set_match_status(SharedString::from(status));
+                                win.show().unwrap();
+                                pin_window_on_monitor(win.window(), &m, PinAnchor::TopRight);
+                                // show() 夺焦会让独占全屏游戏最小化 —— 把焦点还回去
+                                game_screen::restore_focus(game_hwnd);
+                            }
+                        });
+                    }
+                    _ => {
+                        kv_log_macro::info!(
+                            "迷你窗本局不弹: {}",
+                            if mons.len() < 2 {
+                                "仅单屏, 游戏必须完整占屏".to_string()
+                            } else {
+                                "未识别到游戏窗口(gamescreen unknown)".to_string()
+                            }
+                        );
+                    }
+                }
+            }
+        } else if current_phase != MatchPhase::InProgress {
+            if mini_shown_this_game {
+                let mini = mini_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = mini.upgrade() {
+                        win.hide().unwrap();
+                    }
+                });
+            }
+            mini_shown_this_game = false;
+        }
     }
 }
 
 async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Token saver: when nothing changed since the last call (idle lobby,
+    // paused champ select, loading screen), skip the request entirely.
+    let mut last_sent_prompt: Option<String> = None;
 
     loop {
         interval.tick().await;
 
-        let (auth_url, deepseek_config, lmstudio_config, ai_provider) = {
+        let (auth_url, deepseek_api_key, ai_provider) = {
             let s = state.lock().unwrap();
             (
                 s.auth_url.clone(),
-                s.deepseek_config.clone(),
-                s.lmstudio_config.clone(),
+                s.deepseek_config.api_key.clone(),
                 s.ai_provider.clone(),
             )
         };
@@ -1423,7 +2371,7 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
             continue;
         }
 
-        if ai_provider != "lmstudio" && deepseek_config.api_key.is_empty() {
+        if ai_provider == "deepseek" && deepseek_api_key.is_empty() {
             let weak = sources_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = weak.upgrade() {
@@ -1433,17 +2381,17 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
             continue;
         }
 
-        let llm_config = if ai_provider == "lmstudio" {
-            lmstudio_config
-        } else {
-            deepseek_config
-        };
-        let client = DeepSeekClient::new(llm_config);
-
         let prompt = match build_current_coach_prompt(&state).await {
             Some(prompt) => prompt,
             None => "当前无法读取实时对局数据，请给出通用对局建议，并提醒玩家等待数据恢复。".to_string(),
         };
+
+        // Skip a byte-identical resend: any actual state motion changes the prompt
+        // (game clock, KDA, picks, bans, phase), so this only silences dead time.
+        if last_sent_prompt.as_deref() == Some(prompt.as_str()) {
+            continue;
+        }
+        last_sent_prompt = Some(prompt.clone());
 
         let history = {
             let s = state.lock().unwrap();
@@ -1456,7 +2404,7 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
 
         append_coach_message(&sources_weak, &state, "user", &context_message);
 
-        match client.chat_messages(messages).await {
+        match chat_with_selected_provider(&state, messages).await {
             Ok(advice) => {
                 append_coach_message(&sources_weak, &state, "assistant", &advice);
                 let tts_text = advice.clone();
@@ -1466,11 +2414,12 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
                         win.set_advice_text(SharedString::from(&advice));
                     }
                 });
-                let tts_config_for_speech = {
+                let (tts_config_for_speech, speech_lock) = {
                     let s = state.lock().unwrap();
-                    s.tts_config.clone()
+                    (s.tts_config.clone(), s.speech_lock.clone())
                 };
                 tokio::task::spawn_blocking(move || {
+                    let _guard = speech_lock.lock().unwrap();
                     let _ = tts::speak_windows_tts_with_config(&tts_text, &tts_config_for_speech);
                 });
             }
@@ -1537,6 +2486,251 @@ fn extract_champion_id_from_session(session: Option<&Value>) -> i64 {
     0
 }
 
+/// Locate the local player's entry inside a champ-select session's myTeam array.
+fn find_local_member<'a>(session: &'a Value) -> Option<&'a Value> {
+    let cell_id = session.get("localPlayerCellId")?.as_i64()?;
+    session
+        .get("myTeam")?
+        .as_array()?
+        .iter()
+        .find(|member| member.get("cellId").and_then(|v| v.as_i64()) == Some(cell_id))
+}
+
+/// The local player's assigned lane ("top"/"jungle"/"middle"/"bottom"/"utility").
+fn extract_assigned_position_from_session(session: Option<&Value>) -> String {
+    session
+        .and_then(find_local_member)
+        .and_then(|member| member.get("assignedPosition"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The locked-in champion of the local player (0 while only hovering).
+/// In the myTeam array, championId is set only after the pick is locked.
+fn extract_locked_champion_id_from_session(session: Option<&Value>) -> i64 {
+    session
+        .and_then(find_local_member)
+        .and_then(|member| member.get("championId"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+//  Apply the best OP.GG rune page for the current lane
+// ---------------------------------------------------------------------------
+
+/// Compute the local counter-rule rune plan from the current champ-select
+/// session. Pure CPU (snapshot + cached OP.GG sections), tuned per matchup.
+/// Returns None when no lane matchup is known or no rule fires.
+fn compute_counter_plan(
+    session_data: Option<&Value>,
+    s: &AppState,
+) -> Option<lcu::counter::RunePlan> {
+    let session = session_data?;
+    let snapshot = lcu::match_context::ChampSelectSnapshot::from_session(session).ok()?;
+    let local = snapshot.local_member()?;
+    let local_id = local.effective_champion();
+    let opponent = snapshot.lane_opponent()?;
+    let opponent_id = opponent.effective_champion();
+    if local_id == 0 || opponent_id == 0 {
+        return None;
+    }
+    let opponent_info = s
+        .champions_map
+        .values()
+        .find(|c| c.key == opponent_id.to_string())?;
+    let profile = lcu::counter::profile_of(opponent_info);
+    let sections = s.opgg_sections_cache.get(&local_id)?;
+    let base = lcu::advisor::best_rune_for_position(sections, &local.assigned_position)?;
+    lcu::counter::plan_for_matchup(
+        base,
+        local_id,
+        &local.assigned_position,
+        opponent_id,
+        &opponent_info.id.to_lowercase(),
+        Some(&profile),
+        &s.opgg_sections_cache,
+    )
+}
+
+/// 渲染当前对位英雄的心理图谱(UI "敌方心理"卡的原始文本)。
+/// 与 compute_counter_plan 共用同一 lane 判定, 但对符文规则不敏感:
+/// 只要对面已选出对位英雄就显示, 即使数据样本不足以出符文方案。
+fn compute_opponent_intel(
+    session_data: Option<&Value>,
+    s: &AppState,
+) -> Option<(String, String)> {
+    let session = session_data?;
+    let snapshot = lcu::match_context::ChampSelectSnapshot::from_session(session).ok()?;
+    let opponent = snapshot.lane_opponent()?;
+    let opp_id = opponent.effective_champion();
+    if opp_id == 0 {
+        return None;
+    }
+    let champ = s
+        .champions_map
+        .values()
+        .find(|c| c.key == opp_id.to_string())?;
+    let zh = s
+        .static_names
+        .champion(&champ.key)
+        .map(str::to_string)
+        .unwrap_or_else(|| champ.name.clone());
+    s.playbook.render_opponent(&champ.key.clone(), &zh)
+}
+
+/// 组装心战卡(战略+战术): 敌我均选自即出, 与 counter 符文互为基准。
+fn compute_war_text(
+    session_data: Option<&Value>,
+    s: &AppState,
+) -> Option<(String, String)> {
+    let session = session_data?;
+    let snapshot = lcu::match_context::ChampSelectSnapshot::from_session(session).ok()?;
+    let local = snapshot.local_member()?;
+    let local_id = local.effective_champion();
+    let opponent = snapshot.lane_opponent()?;
+    let opp_id = opponent.effective_champion();
+    if local_id == 0 || opp_id == 0 {
+        return None;
+    }
+    let own_info = s
+        .champions_map
+        .values()
+        .find(|c| c.key == local_id.to_string())?;
+    let opp_info = s
+        .champions_map
+        .values()
+        .find(|c| c.key == opp_id.to_string())?;
+    let pressure = lcu::counter::pressure_of_matchup(
+        local_id,
+        &local.assigned_position,
+        opp_id,
+        &opp_info.id.to_lowercase(),
+        &s.opgg_sections_cache,
+    );
+    let card = lcu::war::WarSystem::load().war_card(own_info, opp_info, &pressure);
+    Some(lcu::war::render_ui(&card))
+}
+
+/// Apply a counter-rule rune plan produced by the local rule engine.
+async fn apply_counter_rune_plan(
+    runes_weak: Weak<RunesWindow>,
+    auth_url: String,
+    plan: lcu::counter::RunePlan,
+    status_prefix: &str,
+) {
+    if auth_url.is_empty() {
+        return;
+    }
+
+    let set_status = |text: String| {
+        let weak = runes_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = weak.upgrade() {
+                win.set_apply_rune_status(SharedString::from(text));
+            }
+        });
+    };
+
+    let line = plan.line.clone();
+    set_status(format!("{status_prefix}正在应用Counter符文: {line}"));
+
+    let endpoint = format!("https://{auth_url}");
+    let rune = plan.to_rune_page();
+    let msg = match lcu_api::apply_rune(endpoint, rune).await {
+        Ok(()) => format!("{status_prefix}已应用Counter符文({line})"),
+        Err(err) => format!("{status_prefix}Counter符文应用失败: {err:?}"),
+    };
+    info!("apply counter rune: {msg}");
+    set_status(msg);
+}
+
+async fn apply_best_rune_for_position(
+    runes_weak: Weak<RunesWindow>,
+    auth_url: String,
+    champion_id: i64,
+    assigned_position: String,
+    status_prefix: &str,
+) {
+    if auth_url.is_empty() {
+        return;
+    }
+
+    let set_status = |text: String| {
+        let weak = runes_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = weak.upgrade() {
+                win.set_apply_rune_status(SharedString::from(text));
+            }
+        });
+    };
+
+    set_status(format!("{status_prefix}正在应用本路最优符文…"));
+
+    let source = DEFAULT_SOURCE_VALUE.to_string();
+    let result = web::list_builds_by_id(&source, champion_id).await;
+    let rune = result.ok().and_then(|sections| {
+        let section_position = advisor::best_section(&sections, &assigned_position)
+            .map(|section| section.position.clone())
+            .unwrap_or_default();
+        advisor::best_rune_for_position(&sections, &assigned_position)
+            .cloned()
+            .map(|rune| (rune, section_position))
+    });
+
+    let Some((rune, section_position)) = rune else {
+        set_status(format!("{status_prefix}无可用符文数据(OP.GG)"));
+        return;
+    };
+
+    let endpoint = format!("https://{auth_url}");
+    let msg = match lcu_api::apply_rune(endpoint, rune).await {
+        Ok(()) => {
+            let zh = lcu::match_context::position_label(&section_position);
+            format!("{status_prefix}已应用{zh}最优符文({champion_id})")
+        }
+        Err(err) => format!("{status_prefix}应用失败: {err:?}"),
+    };
+    info!("apply best rune: {msg}");
+    set_status(msg);
+}
+
+// ---------------------------------------------------------------------------
+//  Auto write recommended item builds on champion lock-in
+// ---------------------------------------------------------------------------
+
+async fn auto_write_builds(
+    sources_weak: Weak<SourcesWindow>,
+    lol_dir: String,
+    is_tencent: bool,
+    champion_id: i64,
+) {
+    let set_status = |applying: bool, ok: bool, text: String| {
+        let weak = sources_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(win) = weak.upgrade() {
+                win.set_applying_builds(applying);
+                win.set_apply_ok(ok);
+                win.set_apply_status(SharedString::from(text));
+            }
+        });
+    };
+
+    set_status(true, false, format!("自动写入推荐出装(英雄 {champion_id})…"));
+
+    let source = DEFAULT_SOURCE_VALUE.to_string();
+    let result = lcu::builds::apply_builds_from_id(&lol_dir, &source, champion_id, is_tencent).await;
+    let ok = result.is_ok();
+    let msg = if ok {
+        format!("已自动写入推荐出装(英雄 {champion_id})")
+    } else {
+        format!("自动写入出装失败(英雄 {champion_id})")
+    };
+    info!("auto write builds: {msg}");
+    set_status(false, ok, msg);
+}
+
 // ---------------------------------------------------------------------------
 //  Show champion runes: fetch avatar, populate source list, fetch runes
 // ---------------------------------------------------------------------------
@@ -1550,25 +2744,47 @@ async fn show_champion_runes(
     // Fetch champion avatar pixels (off UI thread)
     let avatar_pixels = fetch_champion_avatar_pixels(&auth_url, champion_id as u64).await;
 
-    // Determine champion name from champions_map
+    // Determine champion name from champions_map, preferring the zh_CN static name.
     let champion_name = {
         let s = state.lock().unwrap();
         s.champions_map
             .values()
             .find(|c| c.key == champion_id.to_string())
-            .map(|c| c.name.clone())
+            .map(|c| {
+                s.static_names
+                    .champion(&c.key)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| c.name.clone())
+            })
             .unwrap_or_default()
     };
+
+    // Current lane label for position-aware rune suggestions.
+    let position_zh = {
+        let s = state.lock().unwrap();
+        lcu::match_context::position_label(&s.current_assigned_position)
+    };
+
+    // 用户手动关过符文窗本次选人就不再自动弹出(尊重显式关闭意图);
+    // 窗口状态仍会更新, 重新打开时就是最新数据。
+    let user_dismissed = { state.lock().unwrap().runes_window_dismissed };
 
     // Update the runes window with champion info
     let weak = runes_weak.clone();
     let champ_name = SharedString::from(&champion_name);
+    let state_pin = state.clone();
 
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(win) = weak.upgrade() {
             win.set_champion_id(champion_id as i32);
             win.set_champion_name(champ_name);
             win.set_has_champion(true);
+            let position_label = if position_zh == "待分配" {
+                String::new()
+            } else {
+                position_zh.clone()
+            };
+            win.set_position_label(SharedString::from(position_label));
 
             if let Some(px) = avatar_pixels {
                 let buffer = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
@@ -1579,7 +2795,10 @@ async fn show_champion_runes(
                 win.set_champion_avatar(Image::from_rgba8(buffer));
             }
 
-            win.show().unwrap();
+            if !user_dismissed {
+                win.show().unwrap();
+                pin_window_to_monitor(win.window(), &state_pin, PinAnchor::Center);
+            }
         }
     });
 
@@ -1590,6 +2809,63 @@ async fn show_champion_runes(
         champion_id,
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+//  显示器固定
+//  原则: 用户在设置里手动选屏; 自动弹出的窗口(runes/mini)也受同一约束,
+//  保证游戏主屏不被遮挡。坐标全是物理像素, 与 EnumDisplayMonitors 的输出一致。
+// ---------------------------------------------------------------------------
+
+/// 窗口在目标屏上的落位方式。
+enum PinAnchor {
+    /// 工作区右上角(迷你窗, 贴"视口角落"更自然)
+    TopRight,
+    /// 工作区居中
+    Center,
+}
+
+/// 将窗口放进 pinned_monitor 指定显示器的工作区。
+/// 在 `show()` 之后调用才能拿到尺寸做精确锚定; 未配置/无该显示器时 no-op。
+fn pin_window_to_monitor(window: &slint::Window, state: &SharedState, anchor: PinAnchor) {
+    let (idx, mons) = {
+        let Ok(s) = state.lock() else {
+            return;
+        };
+        (s.pinned_monitor, s.monitors.clone())
+    };
+    if idx < 0 {
+        return;
+    }
+    let Some(m) = mons.get(idx as usize) else {
+        // 索引越界 = 之前配置的显示器现在不在, 静默回退不固定
+        return;
+    };
+    let (l, t, r, _b) = m.work_rect;
+    let size = window.size(); // 物理像素; show() 后才有意义
+    let (x, y) = match anchor {
+        PinAnchor::TopRight => ((r - size.width as i32).max(l) - 24, t + 40),
+        PinAnchor::Center => (
+            (l + r).div_euclid(2) - (size.width as i32).div_euclid(2),
+            (t + _b).div_euclid(2) - (size.height as i32).div_euclid(2),
+        ),
+    };
+    window.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(x, y)));
+}
+
+/// 将窗口放进**指定**显示器的工作区(不读 settings, 调用方已经决定了屏)。
+/// 迷你窗用这条: 目标屏由 game_screen 规则求出, 与用户 pinned_monitor 无关。
+fn pin_window_on_monitor(window: &slint::Window, m: &monitors::Monitor, anchor: PinAnchor) {
+    let (l, t, r, b) = m.work_rect;
+    let size = window.size();
+    let (x, y) = match anchor {
+        PinAnchor::TopRight => ((r - size.width as i32).max(l) - 24, t + 40),
+        PinAnchor::Center => (
+            (l + r).div_euclid(2) - (size.width as i32).div_euclid(2),
+            (t + b).div_euclid(2) - (size.height as i32).div_euclid(2),
+        ),
+    };
+    window.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(x, y)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1613,7 +2889,26 @@ async fn fetch_and_show_runes(
 
     match web::list_builds_by_id(&source, champion_id).await {
         Ok(sections) => {
-            let runes: Vec<Rune> = sections.iter().flat_map(|s| s.runes.clone()).collect();
+            let assigned_position = {
+                let s = state.lock().unwrap();
+                s.current_assigned_position.clone()
+            };
+            let mut runes: Vec<Rune> = sections.iter().flat_map(|s| s.runes.clone()).collect();
+            // Put the pages for the current lane first (stable sort keeps OP.GG's
+            // popularity order inside each group).
+            if !assigned_position.is_empty() {
+                let aliases = lcu::match_context::opgg_position_aliases(&assigned_position);
+                runes.sort_by_key(|rune| {
+                    let on_lane = aliases
+                        .iter()
+                        .any(|a| rune.position.eq_ignore_ascii_case(a));
+                    if on_lane {
+                        0
+                    } else {
+                        1
+                    }
+                });
+            }
 
             let rune_models: Vec<RuneModel> = runes
                 .iter()

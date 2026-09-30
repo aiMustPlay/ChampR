@@ -893,6 +893,7 @@ dependencies = [
  "slint-build",
  "tokio",
  "toml 0.8.19",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3066,6 +3067,7 @@ dependencies = [
  "anyhow",
  "base64 0.21.7",
  "bytes",
+ "dirs",
  "femme",
  "flate2",
  "futures",
@@ -3085,7 +3087,9 @@ dependencies = [
  "serde_with",
  "tar",
  "tokio",
+ "toml 0.8.19",
  "url",
+ "zerovec",
 ]
 
 [[package]]
