@@ -151,7 +151,7 @@ impl Default for AppState {
             current_assigned_position: String::new(),
             auto_apply_rune: false,
             auto_apply_builds: false,
-            auto_accept_match: false,
+            auto_accept_match: true,
             reminder_tier: 0,
             mini_live_enabled: true,
             pinned_monitor: -1,

@@ -353,7 +353,7 @@ export component SourcesWindow inherits Window {
                     height: Tokens.row-height;
 
                     Text {
-                        text: "对局面板";
+                        text: "对局数据";
                         font-size: Tokens.f-section;
                         font-weight: 600;
                         vertical-alignment: center;
@@ -363,13 +363,20 @@ export component SourcesWindow inherits Window {
                         height: 1px;
                     }
                     CheckBox {
-                        text: "对局迷你窗";
+                        text: "开局弹迷你窗";
                         checked: root.mini-live-enabled;
                         toggled => {
                             root.mini-live-enabled = !root.mini-live-enabled;
                             root.mini-live-toggled(root.mini-live-enabled);
                         }
                     }
+                }
+
+                Text {
+                    text: "勾选后: 每局进场在另一块屏弹 340×220 置顶小窗(比分/资源/出装,2.5s 刷一次); 弹完焦点立刻还给游戏, 永不落在游戏屏; 只有一块屏时不弹。";
+                    font-size: Tokens.f-mini;
+                    color: Tokens.c-text-faint;
+                    wrap: word-wrap;
                 }
 
                 TextEdit {
@@ -489,8 +496,8 @@ export component TtsSettingsWindow inherits Window {
     in-out property <string> tts-test-text: "";
     in-out property <string> tts-test-status: "";
     in-out property <string> lol-launcher-path: "";
-    // 排队就绪自动接受对局(默认关, 替你进对局属于要认领的行为)
-    in-out property <bool> auto-accept-match: false;
+    // 排队就绪自动接受对局(用户 2026-09-30 拍板默认开, 可在设置关)
+    in-out property <bool> auto-accept-match: true;
     in-out property <string> deepseek-api-key: "";
     in-out property <string> deepseek-base-url: "";
     in-out property <string> deepseek-model: "";
@@ -595,7 +602,7 @@ export component TtsSettingsWindow inherits Window {
                     toggled => { root.auto-accept-match = self.checked; }
                 }
                 Text {
-                    text: "对局中找到后自动接受, 不用再守客户端; 只影响你自己, 每局最多触发一次。默认关。";
+                    text: "对局中找到后自动接受, 不用再守客户端; 只影响你自己, 每局最多触发一次; 可随时关闭。";
                     font-size: Tokens.f-mini;
                     color: Tokens.c-text-faint;
                     wrap: word-wrap;

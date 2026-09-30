@@ -41,8 +41,9 @@ pub struct Settings {
     /// Automatically write recommended item builds on champion lock-in.
     #[serde(default)]
     pub auto_apply_builds: bool,
-    /// 排队就绪时自动点"接受对局"(默认关: 替你进对局属于要认领的行为)。
-    #[serde(default)]
+    /// 排队就绪时自动点"接受对局"。默认开(用户 2026-09-30 拍板),
+    /// 可以在设置里关。
+    #[serde(default = "default_true")]
     pub auto_accept_match: bool,
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
     #[serde(default)]
@@ -77,6 +78,10 @@ pub struct Settings {
 
 fn default_ai_backend() -> String {
     "maohou".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_tts_volume() -> i32 {
@@ -150,7 +155,7 @@ impl Default for Settings {
             deepseek_web_risk_accepted: false,
             auto_apply_rune: false,
             auto_apply_builds: false,
-            auto_accept_match: false,
+            auto_accept_match: true,
             reminder_tier: 0,
             mini_live_window: default_mini_live_window(),
             pinned_monitor: default_pinned_monitor(),
