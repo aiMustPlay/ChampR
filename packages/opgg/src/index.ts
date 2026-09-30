@@ -55,6 +55,10 @@ function parseArgs(argv: string[]): CrawlerOptions {
       options.outputDir = arg.split('=')[1];
     } else if (arg.startsWith('--concurrency=')) {
       options.concurrency = parseInt(arg.split('=')[1], 10);
+    } else if (arg === '--no-counters') {
+      options.counters = false;
+    } else if (arg === '--no-skills') {
+      options.skills = false;
     } else if (arg.startsWith('--file=')) {
       const filePath = arg.split('=')[1];
       const fs = require('node:fs');
@@ -128,6 +132,8 @@ Options:
   --mode=<mode>            Game mode: ranked, aram, urf, aram-mayhem (default: ranked)
   --output=<dir>           Output directory (default: ./output)
   --concurrency=<n>        Max concurrent browsers (default: 3)
+  --no-counters            Skip the counter matchup table (ranked crawls fetch it by default)
+  --no-skills              Skip the skills page (ranked crawls fetch skill priority by default)
 
 Examples:
   pnpm start leesin
@@ -169,6 +175,16 @@ Examples:
     console.log(`    Item Builds: ${section.itemBuilds.length} set(s)`);
     for (const build of section.itemBuilds) {
       console.log(`      - ${build.title} (${build.blocks.length} blocks)`);
+    }
+    if (section.counters) {
+      const top = section.counters.matchups.slice(0, 3);
+      console.log(
+        `    Counters (${section.counters.position || 'main lane'}): ${section.counters.matchups.length} matchups, e.g. ` +
+          top.map((m) => `${m.championKey} ${m.winRate}/${m.play}g`).join(', '),
+      );
+    }
+    if (section.skills) {
+      console.log(`    Skills: ${section.skills.join('>')}`);
     }
   }
 

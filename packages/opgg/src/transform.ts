@@ -3,12 +3,15 @@ import type {
   OpggPageData,
   OpggRunePage,
   OpggItemBuilds,
+  OpggCounters,
+  OpggSkillMastery,
   GameMode,
   LcuRune,
   LcuItemBuild,
   LcuBlock,
   LcuItem,
   LcuBuildSection,
+  LcuCounters,
 } from './types.js';
 
 const SOURCE_NAME = 'op.gg';
@@ -336,9 +339,47 @@ export function transformItemBuilds(
 }
 
 /**
+ * Convert the counters-page matchup table into the output shape.
+ * Opponent champion ids resolve against the pre-fetched champion list when present.
+ */
+export function transformCounters(
+  counters: OpggCounters | null | undefined,
+  championIds?: Map<string, number>,
+): LcuCounters | null {
+  if (!counters || counters.matchups.length === 0) return null;
+
+  return {
+    position: counters.position,
+    matchups: counters.matchups.map((m) => ({
+      championId: championIds?.get(m.champion.key.toLowerCase()) ?? 0,
+      championKey: m.champion.key.toLowerCase(),
+      // win_rate is crawled from the section champion's perspective (0-100, e.g. 46.47)
+      winRate: `${m.win_rate.toFixed(2)}%`,
+      play: m.play,
+    })),
+  };
+}
+
+/**
+ * Convert skill masteries into the Rust `skills` shape: the leveling priority
+ * of the most-played mastery, e.g. ["Q","E","W"] (rendered later as "Q>E>W").
+ */
+export function transformSkills(
+  masteries: OpggSkillMastery[] | null | undefined,
+): string[] | null {
+  if (!masteries || masteries.length === 0) return null;
+  const best = [...masteries].sort((a, b) => (b.play ?? 0) - (a.play ?? 0))[0];
+  if (!best?.ids || best.ids.length === 0) return null;
+  return best.ids;
+}
+
+/**
  * Transform complete OP.GG page data into a BuildSection compatible with the Rust app.
  */
-export function transformPageData(data: OpggPageData): LcuBuildSection {
+export function transformPageData(
+  data: OpggPageData,
+  championIds?: Map<string, number>,
+): LcuBuildSection {
   const position = ''; // OP.GG /build page is the default position
   const runes = transformRunes(data.runePages, data.champion, position, data.mode);
   const itemBuilds = transformItemBuilds(
@@ -348,14 +389,14 @@ export function transformPageData(data: OpggPageData): LcuBuildSection {
     data.championId,
     data.mode,
   );
-
-  const modeLabel = getModeLabel(data.mode);
-  // For non-ranked modes, use the mode as the ID suffix
-  const idSuffix = data.mode === 'ranked' ? 'ranked' : data.mode;
+  const counters = transformCounters(data.counters, championIds);
+  const skills = transformSkills(data.skills);
 
   return {
     index: 0,
-    id: data.championId ? String(data.championId) : `opgg-${data.champion}-${idSuffix}`,
+    id: data.championId ? String(data.championId) : `opgg-${data.champion}-${
+      data.mode === 'ranked' ? 'ranked' : data.mode
+    }`,
     version: data.version,
     officialVersion: data.officialVersion,
     pickCount: data.runePages[0]?.play ?? 0,
@@ -366,10 +407,11 @@ export function transformPageData(data: OpggPageData): LcuBuildSection {
     alias: data.champion,
     name: data.champion,
     position,
-    skills: null,
+    skills,
     spells: null,
     championTier: data.championTier,
     itemBuilds,
     runes,
+    counters,
   };
 }

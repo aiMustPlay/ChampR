@@ -21,6 +21,19 @@ importers:
         specifier: ^8.18.0
         version: 8.20.0
 
+  packages/deepseek-web:
+    dependencies:
+      playwright:
+        specifier: ^1.52.0
+        version: 1.58.2
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.19.15
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+
   packages/opgg:
     dependencies:
       crawlee:

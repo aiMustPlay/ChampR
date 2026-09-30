@@ -7,6 +7,9 @@ import type {
   OpggCoreBuildRow,
   OpggDepthItemRow,
   OpggPageData,
+  OpggCounters,
+  OpggMatchup,
+  OpggSkillMastery,
   GameMode,
 } from './types.js';
 
@@ -539,6 +542,134 @@ export async function parseBuildPage(
     itemBuilds,
     championTier: null, // Set by caller from pre-fetched tier map
   };
+}
+
+/**
+ * Locate the lane matchup table inside RSC chunks.
+ * The counters page ships it as `{"data":[{play,win,win_rate,champion:{key,...}}, ...]}`,
+ * injected as a prop to a client component. We scan for `"data":[` arrays and keep
+ * the ones whose items all match the matchup shape.
+ */
+export function parseCounterMatchups(chunks: string[]): OpggMatchup[] {
+  const seen = new Map<string, OpggMatchup>();
+
+  for (const chunk of chunks) {
+    let searchFrom = 0;
+    for (;;) {
+      const idx = chunk.indexOf('"data":[', searchFrom);
+      if (idx === -1) break;
+      searchFrom = idx + 1;
+
+      const arrayStart = idx + '"data":'.length;
+      const jsonStr = extractBalancedJson(chunk, arrayStart);
+      if (!jsonStr) continue;
+
+      let items: unknown;
+      try {
+        items = JSON.parse(jsonStr);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(items) || items.length === 0) continue;
+
+      for (const item of items) {
+        const candidate = item as Partial<OpggMatchup>;
+        if (
+          typeof candidate.play !== 'number' ||
+          typeof candidate.win !== 'number' ||
+          typeof candidate.win_rate !== 'number' ||
+          !candidate.champion ||
+          typeof candidate.champion.key !== 'string' ||
+          typeof candidate.champion.name !== 'string'
+        ) {
+          continue;
+        }
+        const key = candidate.champion.key.toLowerCase();
+        if (!seen.has(key)) {
+          seen.set(key, candidate as OpggMatchup);
+        }
+      }
+    }
+  }
+
+  return [...seen.values()];
+}
+
+/**
+ * Parse the counters page (/lol/champions/{champ}/counters).
+ * Returns the lane-specific matchup table plus the lane shown in the heading.
+ * The matchup list renders lazily, so we scroll to trigger it first.
+ */
+export async function parseCounterPage(page: Page): Promise<OpggCounters | null> {
+  // Trigger lazy content: the matchup list loads on scroll.
+  for (let i = 0; i < 6; i++) {
+    await page.mouse.wheel(0, 900).catch(() => {});
+    await page.waitForTimeout(600);
+  }
+
+  const chunks = await extractRscChunks(page);
+  const matchups = parseCounterMatchups(chunks);
+  if (matchups.length === 0) {
+    return null;
+  }
+
+  // Heading looks like "Aatrox Counters For Top, Patch 16.19".
+  const bodyText = await page
+    .evaluate(() => document.body.innerText)
+    .catch(() => '');
+  const laneMatch = /counters\s+for\s+([a-z]+)/i.exec(bodyText.substring(0, 3000));
+
+  return {
+    position: laneMatch ? laneMatch[1].toLowerCase() : '',
+    matchups,
+  };
+}
+
+/**
+ * Locate `skill_masteries` inside RSC chunks (the /skills page ships them as
+ * `[{"ids":["Q","E","W"],"play":...,"builds":[{order:[...],play,win_rate}, ...]}, ...]`).
+ */
+export function parseSkillMasteries(chunks: string[]): OpggSkillMastery[] {
+  for (const chunk of chunks) {
+    let searchFrom = 0;
+    for (;;) {
+      const idx = chunk.indexOf('"skill_masteries":[', searchFrom);
+      if (idx === -1) break;
+      searchFrom = idx + 1;
+
+      const arrayStart = idx + '"skill_masteries":'.length;
+      const jsonStr = extractBalancedJson(chunk, arrayStart);
+      if (!jsonStr) continue;
+
+      let items: unknown;
+      try {
+        items = JSON.parse(jsonStr);
+      } catch {
+        continue;
+      }
+      if (
+        Array.isArray(items) &&
+        items.length > 0 &&
+        items.every((m) => m && Array.isArray(m.ids) && Array.isArray(m.builds))
+      ) {
+        return items as OpggSkillMastery[];
+      }
+    }
+  }
+  return [];
+}
+
+/**
+ * Parse the /skills page for skill masteries. RSC dedupe turns repeated
+ * fields into "$ref" strings, but `ids`/`play` stay inline — all we need.
+ */
+export async function parseSkillsPage(page: Page): Promise<OpggSkillMastery[]> {
+  for (let i = 0; i < 4; i++) {
+    await page.mouse.wheel(0, 700).catch(() => {});
+    await page.waitForTimeout(400);
+  }
+  const chunks = await extractRscChunks(page);
+  return parseSkillMasteries(chunks);
 }
 
 export { extractRscChunks, parseRunePages, parseItemBuilds, extractBalancedJson };

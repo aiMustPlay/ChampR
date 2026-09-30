@@ -113,6 +113,40 @@ export interface OpggItemBuilds {
   sixthItems: OpggDepthItemRow[];
 }
 
+/** One lane matchup row from the counters page RSC payload (win_rate from the crawled champion's perspective) */
+export interface OpggMatchup {
+  play: number;
+  win: number;
+  win_rate: number;
+  champion: {
+    key: string;
+    name: string;
+    image_url?: string;
+  };
+}
+
+/** Counter matchup list parsed from /lol/champions/{champ}/counters */
+export interface OpggCounters {
+  /** Lane shown on the counters page heading (e.g. "top", "bottom"); "" if unknown */
+  position: string;
+  matchups: OpggMatchup[];
+}
+
+/** One full 15-point skill order row under a mastery choice */
+export interface OpggSkillBuildRow {
+  order: string[];
+  play: number;
+  win_rate: number;
+}
+
+/** Skill mastery group from the /skills page: `ids` is the leveling priority, e.g. ["Q","E","W"] */
+export interface OpggSkillMastery {
+  ids: string[];
+  play: number;
+  pick_rate: number;
+  builds: OpggSkillBuildRow[];
+}
+
 /** Supported game modes */
 export type GameMode = 'ranked' | 'aram' | 'urf' | 'aram-mayhem';
 
@@ -129,6 +163,10 @@ export interface OpggPageData {
   officialVersion: string;
   runePages: OpggRunePage[];
   itemBuilds: OpggItemBuilds;
+  /** Counter matchup table from the counters page (ranked mode only) */
+  counters?: OpggCounters | null;
+  /** Skill masteries from the /skills page (ranked mode only) */
+  skills?: OpggSkillMastery[] | null;
   /** Champion tier from the page, e.g. "1", "2", "OP", "S" */
   championTier: string | null;
   /** Riot numeric champion id, when available from the pre-fetched champion list */
@@ -181,6 +219,24 @@ export interface LcuRune {
   type: string;
 }
 
+/** Matches Rust `Matchup` struct in builds.rs */
+export interface LcuMatchup {
+  /** Riot champion id of the opponent (0 when unknown) */
+  championId: number;
+  /** OP.GG champion slug, e.g. "yone" */
+  championKey: string;
+  /** Win rate from the section champion's perspective, e.g. "46.47%" */
+  winRate: string;
+  play: number;
+}
+
+/** Matches Rust `Counters` struct in builds.rs */
+export interface LcuCounters {
+  /** Lane the counters were collected for, e.g. "top" ("" when unknown) */
+  position: string;
+  matchups: LcuMatchup[];
+}
+
 /** Matches Rust `BuildSection` struct */
 export interface LcuBuildSection {
   index: number;
@@ -198,6 +254,7 @@ export interface LcuBuildSection {
   championTier: string | null;
   itemBuilds: LcuItemBuild[];
   runes: LcuRune[];
+  counters?: LcuCounters | null;
 }
 
 /** Crawler configuration options */
@@ -212,6 +269,10 @@ export interface CrawlerOptions {
   position?: string;       // default: "" (all positions from page)
   championTiers?: Map<string, number>; // pre-fetched tier map from OP.GG champion list
   championIds?: Map<string, number>;   // pre-fetched Riot champion id map from OP.GG
+  /** Also crawl the counter matchup table per champion (ranked mode only). Default: true */
+  counters?: boolean;
+  /** Also crawl skill masteries per champion (ranked mode only). Default: true */
+  skills?: boolean;
 }
 
 // ============================================================
@@ -243,6 +304,8 @@ export interface ChampionCrawlStatus {
   runes: number;
   /** Number of item build sets in the output (0 for 'failed') */
   itemBuilds: number;
+  /** Number of counter matchups in the output (0 for 'failed' or non-ranked) */
+  counters: number;
   /** Champion tier string if available, e.g. "1", "2" */
   championTier?: string | null;
   /** ISO-8601 timestamp of when this entry was recorded */

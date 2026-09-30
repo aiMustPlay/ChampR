@@ -7,7 +7,7 @@ import type {
   GameMode,
   LcuBuildSection,
 } from './types.js';
-import { parseBuildPage, extractModeChampionList, extractRankedChampionList, type OpggChampionInfo } from './parser.js';
+import { parseBuildPage, parseCounterPage, parseSkillsPage, extractModeChampionList, extractRankedChampionList, type OpggChampionInfo } from './parser.js';
 import { transformPageData } from './transform.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -89,6 +89,31 @@ export function buildUrl(
 
   const params = new URLSearchParams({ region, tier });
   return `${BASE_URL}/${champion}/build?${params.toString()}`;
+}
+
+/**
+ * Build the OP.GG URL for a champion's counters page.
+ * No lane in the path: the page defaults to the champion's main lane.
+ */
+export function counterUrl(
+  champion: string,
+  region: string = DEFAULT_REGION,
+  tier: string = DEFAULT_TIER,
+): string {
+  const params = new URLSearchParams({ region, tier });
+  return `${BASE_URL}/${champion}/counters?${params.toString()}`;
+}
+
+/**
+ * Build the OP.GG URL for a champion's skills page (skill order data).
+ */
+export function skillsUrl(
+  champion: string,
+  region: string = DEFAULT_REGION,
+  tier: string = DEFAULT_TIER,
+): string {
+  const params = new URLSearchParams({ region, tier });
+  return `${BASE_URL}/${champion}/skills?${params.toString()}`;
 }
 
 /**
@@ -178,6 +203,8 @@ function makeRequestHandler(
   championTiers: Map<string, number> | undefined,
   championIds: Map<string, number> | undefined,
   statusMap: Map<string, ChampionCrawlStatus>,
+  crawlCounters = true,
+  crawlSkills = true,
 ) {
   return async (ctx: PlaywrightCrawlingContext) => {
     const { page, request, log } = ctx;
@@ -194,7 +221,40 @@ function makeRequestHandler(
     if (championIds && championIds.has(champion)) {
       pageData.championId = championIds.get(champion);
     }
-    const buildSection = transformPageData(pageData);
+
+    // Ranked mode: also grab the lane matchup table from the counters page.
+    if (m === 'ranked' && crawlCounters) {
+      try {
+        await page.goto(counterUrl(champion, r, t), {
+          waitUntil: 'domcontentloaded',
+          timeout: 60_000,
+        });
+        await page.waitForTimeout(2500);
+        pageData.counters = await parseCounterPage(page);
+        log.info(`Counters for ${champion}: ${pageData.counters?.matchups.length ?? 0} matchups`);
+      } catch (err) {
+        log.warning(`Counter page failed for ${champion}: ${err}`);
+        pageData.counters = null;
+      }
+    }
+
+    // Ranked mode: grab skill masteries (leveling priority) from the skills page.
+    if (m === 'ranked' && crawlSkills) {
+      try {
+        await page.goto(skillsUrl(champion, r, t), {
+          waitUntil: 'domcontentloaded',
+          timeout: 60_000,
+        });
+        await page.waitForTimeout(2500);
+        pageData.skills = await parseSkillsPage(page);
+        log.info(`Skills for ${champion}: ${pageData.skills.length} masteries`);
+      } catch (err) {
+        log.warning(`Skills page failed for ${champion}: ${err}`);
+        pageData.skills = null;
+      }
+    }
+
+    const buildSection = transformPageData(pageData, championIds);
 
     // Override championTier from pre-fetched tier map if available
     if (championTiers && championTiers.has(champion)) {
@@ -223,6 +283,7 @@ function makeRequestHandler(
       outputFile: outputPath,
       runes: buildSection.runes.length,
       itemBuilds: buildSection.itemBuilds.length,
+      counters: buildSection.counters?.matchups.length ?? 0,
       championTier: buildSection.championTier,
       timestamp: new Date().toISOString(),
     });
@@ -251,6 +312,8 @@ export async function crawlChampions(
     concurrency = DEFAULT_CONCURRENCY,
     championTiers,
     championIds,
+    counters: crawlCounters = true,
+    skills: crawlSkills = true,
   } = options;
 
   // Build the list of champions to crawl
@@ -299,6 +362,8 @@ export async function crawlChampions(
       championTiers,
       championIds,
       statusMap,
+      crawlCounters,
+      crawlSkills,
     ),
 
     failedRequestHandler({ request, log }) {
@@ -313,6 +378,7 @@ export async function crawlChampions(
         reason: 'All retries exhausted during main crawl pass',
         runes: 0,
         itemBuilds: 0,
+        counters: 0,
         timestamp: new Date().toISOString(),
       });
     },
@@ -353,6 +419,8 @@ export async function crawlChampions(
         championTiers,
         championIds,
         statusMap,
+        crawlCounters,
+        crawlSkills,
       ),
 
       failedRequestHandler({ request, log }) {
@@ -367,6 +435,7 @@ export async function crawlChampions(
           reason: 'All retries exhausted (main pass + retry pass)',
           runes: 0,
           itemBuilds: 0,
+          counters: 0,
           timestamp: new Date().toISOString(),
         });
       },
