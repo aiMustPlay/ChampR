@@ -67,7 +67,8 @@ impl ChatMessage {
     }
 }
 
-fn normalize_plain_text(text: &str) -> String {
+/// 输出文本规整: 只留中英文数字/中英文逗号句号(maohou 适配层共用)。
+pub fn normalize_plain_text(text: &str) -> String {
     let mut output = String::new();
     let mut last_was_space = false;
 
@@ -89,7 +90,8 @@ fn normalize_plain_text(text: &str) -> String {
     output
 }
 
-fn contains_cjk(text: &str) -> bool {
+/// 应答须含中文(advisor 全链路的品质阀门, maohou 适配层共用)。
+pub fn contains_cjk(text: &str) -> bool {
     text.chars()
         .any(|ch| ('\u{4E00}'..='\u{9FFF}').contains(&ch))
 }

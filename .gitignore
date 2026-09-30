@@ -15,11 +15,15 @@ logs/
 node_modules
 **/*/dist/
 **/*/output/
+/output/
 **/*/storage/
 
 data/
+# ... but keep the counter-rule build inputs compiled into the lcu crate.
+!crates/lcu/data/
 _scratch_cmd_check/
 
 .cache/
 cache/
 **/.cache/
+**/deepseek-web-profile/
