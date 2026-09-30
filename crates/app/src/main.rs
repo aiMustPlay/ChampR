@@ -1161,25 +1161,16 @@ fn setup_tray(main_weak: Weak<SourcesWindow>) {
     let quit_id = quit_item.id().clone();
     let menu = Menu::with_items(&[&quit_item]).expect("tray menu");
 
-    // 32x32 金底深芯(Hextech 风格), 游戏中一眼可辨
-    let size = 32u32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let i = ((y * size + x) * 4) as usize;
-            let border = x < 3 || y < 3 || x >= size - 3 || y >= size - 3;
-            let (r, g, b) = if border {
-                (13u8, 17u8, 25u8) // c-dark-page 深底框
-            } else {
-                (200u8, 170u8, 110u8) // c-gold 金芯
-            };
-            rgba[i] = r;
-            rgba[i + 1] = g;
-            rgba[i + 2] = b;
-            rgba[i + 3] = 255;
-        }
-    }
-    let icon = tray_icon::Icon::from_rgba(rgba, size, size).expect("tray icon pixels");
+    // 真应用图标(编译期内嵌 64px PNG): 与任务栏/Alt-Tab 同一个金色 L。
+    // 解码失败才退回代码画的金底深框 —— 编译产物自包含, 不应发生。
+    let icon_png = include_bytes!("../ui/icons/champr-64.png");
+    let icon = image::load_from_memory(icon_png)
+        .map(|img| {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            tray_icon::Icon::from_rgba(rgba.into_raw(), w, h).expect("tray icon pixels")
+        })
+        .expect("embedded tray icon decode");
 
     let _tray = TrayIconBuilder::new()
         .with_tooltip("ChampR")

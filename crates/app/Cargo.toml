@@ -25,3 +25,4 @@ windows-sys = { version = "0.52", features = [
 
 [build-dependencies]
 slint-build = "1.15"
+embed-resource = "2.5"
