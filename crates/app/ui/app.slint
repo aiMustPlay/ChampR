@@ -6,6 +6,8 @@ import { VerticalBox, HorizontalBox, ListView, ScrollView, Button, SpinBox, Line
 // ---------------------------------------------------------------------------
 
 export global Tokens {
+    // 全局字体: Slint 默认字体回退渲染中文很糟, 统一微软雅黑 UI。
+    out property <string> font-family: "Microsoft YaHei UI";
     // spacing scale (8pt grid, 4px 起步)
     out property <length> s-xs: 4px;
     out property <length> s-sm: 8px;
@@ -111,6 +113,7 @@ export struct RuneModel {
 // ---------------------------------------------------------------------------
 
 export component SourcesWindow inherits Window {
+    default-font-family: Tokens.font-family;
     title: "ChampR";
     preferred-width: Tokens.win-main-w;
     preferred-height: Tokens.win-main-h;
@@ -472,6 +475,7 @@ export component SourcesWindow inherits Window {
     }
 }
 export component TtsSettingsWindow inherits Window {
+    default-font-family: Tokens.font-family;
     title: "设置";
     preferred-width: Tokens.win-settings-w;
     preferred-height: Tokens.win-settings-h;
@@ -763,6 +767,7 @@ export component TtsSettingsWindow inherits Window {
     }
 }
 export component RunesWindow inherits Window {
+    default-font-family: Tokens.font-family;
     title: "符文";
     preferred-width: Tokens.win-runes-w;
     preferred-height: Tokens.win-runes-h;
@@ -1098,6 +1103,7 @@ export component RunesWindow inherits Window {
 //  尺寸参照桌面助手通行规格 340x220, 只露对局摘要, 关闭后本局不重弹。
 // ---------------------------------------------------------------------------
 export component MiniMatchWindow inherits Window {
+    default-font-family: Tokens.font-family;
     title: "对局摘要";
     width: Tokens.win-mini-w;
     height: Tokens.win-mini-h;
