@@ -1,238 +1,2135 @@
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::web::ChampionsMap;
+use crate::builds::BuildSection;
+use crate::match_context::{
+    opgg_position_aliases, position_label, ChampSelectMember, ChampSelectSnapshot, LivePlayer,
+    LiveSnapshot, TeamObjectives,
+};
+use crate::tips::PlaystyleAtlas;
+use crate::web::{ChampionsMap, StaticNames};
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a League of Legends in-game coach.
-Read the current team compositions and local player matchup, then provide concise, actionable advice.
-Focus on:
-1. Lane matchup and trading tips for the local player.
-2. Mid-game macro priorities around dragons and Void Grubs.
-3. Itemization/positioning advice based on both teams.
-When current player levels are available, provide strategy by level range:
-1-3 levels: laning mechanics and trading.
-3-5 levels: laning strategy.
-5-6 levels: kill pressure and all-in strategy.
-6-12 levels: objective control for dragon, Void Grubs, and Rift Herald.
-12-18 levels: teamfighting and side-lane pushing strategy.
+The context you receive may include:
+- Champion select data: bans, both teams' champions, lanes and solo-queue ranks, the
+  local player's current rune page, the lane opponent, and OP.GG stats (tier, win
+  rate, recommended runes, skill order and item builds).
+- Live game data: every player's champion, level, KDA, CS, keystone and rune trees,
+  summoner spells, items and death state, the local player's gold, ability levels,
+  champion stats and full rune page, team kill scores, objective control (dragons,
+  Void Grubs, Rift Herald, Baron, towers, inhibitors) and recent kills.
+Always base your reply on this data, and answer in this order:
+1. Lane matchup analysis for the local player against the lane opponent.
+2. Rune advice: compare the local player's current or expected runes with the
+   recommended ones, and point out what should change for this matchup.
+3. Itemization and how-to-play advice that fits the current game state, objective
+   difference and team compositions.
 All replies must be in Simplified Chinese only, regardless of the prompt language.
-Do not reply in English or any other language.
-Keep it under 250 characters, and do not include unrelated fluff.
+Keep it under 350 characters, no unrelated fluff, mention concrete numbers from the
+data instead of generic statements, and when some data is missing, say so briefly.
 Your final reply must contain only plain text, commas, and periods. Do not use any
 other punctuation, markdown, bullet points, question marks, exclamation marks,
 colons, parentheses, or special symbols."#;
 
-fn champion_name(champion_id: i64, champions: &ChampionsMap) -> String {
-    champions
+// ---------------------------------------------------------------------------
+//  Name resolution helpers
+// ---------------------------------------------------------------------------
+
+fn champ_zh_by_id(champion_id: i64, champions: &ChampionsMap, names: &StaticNames) -> Option<String> {
+    if champion_id <= 0 {
+        return None;
+    }
+    let key = champion_id.to_string();
+    let champ = champions.values().find(|c| c.key == key)?;
+    Some(
+        names
+            .champion(&champ.key)
+            .map(str::to_string)
+            .unwrap_or_else(|| champ.name.clone()),
+    )
+}
+
+/// allPlayers only carries the English display name; resolve it through Data Dragon
+/// (key -> zh name). Falls back to the raw display name.
+fn champ_zh_by_display(display: &str, champions: &ChampionsMap, names: &StaticNames) -> String {
+    if display.is_empty() {
+        return "未知英雄".to_string();
+    }
+    if let Some(champ) = champions
         .values()
-        .find(|champion| champion.key == champion_id.to_string())
-        .map(|champion| champion.name.clone())
-        .unwrap_or_else(|| champion_id.to_string())
+        .find(|c| c.name == display || c.id == display)
+    {
+        return names
+            .champion(&champ.key)
+            .map(str::to_string)
+            .unwrap_or_else(|| champ.name.clone());
+    }
+    display.to_string()
 }
 
-fn parse_team(team: Option<&Value>, champions: &ChampionsMap) -> Vec<String> {
-    let Some(members) = team.and_then(Value::as_array) else {
-        return Vec::new();
-    };
+/// Live Client Data reports summoner spells by English display name only.
+fn spell_zh_by_display(display: &str) -> String {
+    match display {
+        "Flash" => "闪现",
+        "Teleport" => "传送",
+        "Smite" => "惩戒",
+        "Ignite" => "点燃",
+        "Heal" => "治疗术",
+        "Ghost" => "幽灵疾步",
+        "Barrier" => "屏障",
+        "Cleanse" => "净化",
+        "Exhaust" => "衰竭",
+        "Clarity" => "清晰术",
+        "Mark" => "标记",
+        "Dash" => "突进",
+        "Poro Toss" => "魄罗投掷",
+        "Poro Dash" => "魄罗冲撞",
+        other if !other.is_empty() => other,
+        _ => "未知",
+    }
+    .to_string()
+}
 
-    members
+/// Champ select reports summoner spells by numeric id.
+fn spell_zh_by_id(id: i64) -> String {
+    match id {
+        1 => "净化",
+        3 => "衰竭",
+        4 => "闪现",
+        6 => "幽灵疾步",
+        7 => "治疗术",
+        11 => "惩戒",
+        12 => "传送",
+        13 => "清晰术",
+        14 => "点燃",
+        21 => "屏障",
+        30 => "魄罗投掷",
+        31 => "魄罗冲撞",
+        32 => "标记",
+        other => return format!("技能{other}"),
+    }
+    .to_string()
+}
+
+fn dragon_zh(dragon_type: &str) -> String {
+    match dragon_type {
+        "Infernal" => "火龙",
+        "Mountain" => "土龙",
+        "Cloud" => "风龙",
+        "Ocean" => "水龙",
+        "Hextech" => "海克斯龙",
+        "Chemtech" => "炼金龙",
+        "Elder" => "远古巨龙",
+        other => other,
+    }
+    .to_string()
+}
+
+fn render_items(items: &[(i64, i64)], names: &StaticNames) -> String {
+    if items.is_empty() {
+        return "无".to_string();
+    }
+    items
         .iter()
-        .filter_map(|member| {
-            let champion_id = member.get("championId")?.as_i64()?;
-            let position = member
-                .get("assignedPosition")
-                .and_then(Value::as_str)
-                .unwrap_or("UNKNOWN");
-            let name = champion_name(champion_id, champions);
-            Some(format!("{name} ({position})"))
+        .map(|(id, count)| {
+            let name = names
+                .item(*id)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("装备{id}"));
+            if *count > 1 {
+                format!("{name}x{count}")
+            } else {
+                name
+            }
         })
-        .collect()
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
-fn format_game_time(seconds: f64) -> String {
+pub fn format_game_time(seconds: f64) -> String {
     let total = seconds.max(0.0) as u64;
     format!("{:02}:{:02}", total / 60, total % 60)
 }
 
-fn live_game_status(game_data: &Value) -> &'static str {
-    let ended = game_data
-        .get("events")
-        .and_then(|events| events.get("Events"))
-        .and_then(Value::as_array)
-        .map(|events| {
-            events.iter().any(|event| {
-                event
-                    .get("EventName")
-                    .and_then(Value::as_str)
-                    == Some("GameEnd")
-            })
-        })
-        .unwrap_or(false);
+// ---------------------------------------------------------------------------
+//  OP.GG backend meta rendering
+// ---------------------------------------------------------------------------
 
-    if ended {
-        "ended"
-    } else {
-        "in-progress"
+/// Pick the section matching the assigned position (falls back to the first one).
+pub fn best_section<'a>(
+    sections: &'a [BuildSection],
+    assigned_position: &str,
+) -> Option<&'a BuildSection> {
+    let aliases = opgg_position_aliases(assigned_position);
+    sections
+        .iter()
+        .find(|s| aliases.iter().any(|a| s.position.eq_ignore_ascii_case(a)))
+        .or_else(|| sections.first())
+}
+
+/// The top rune page for the current lane, used by "apply best rune" / auto-apply.
+/// OP.GG lists runes by popularity inside each position section, so the first
+/// entry of the matching section is the recommended page.
+pub fn best_rune_for_position<'a>(
+    sections: &'a [BuildSection],
+    assigned_position: &str,
+) -> Option<&'a crate::builds::Rune> {
+    best_section(sections, assigned_position)?.runes.first()
+}
+
+/// One-line summary used for non-local players:
+/// "暗裔剑魔·上单: 梯度T2 胜率50.3% 常用基石:征服者+坚决系"
+pub fn render_opgg_summary(
+    champion_id: i64,
+    assigned_position: &str,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+) -> Option<String> {
+    let sections = sections_map.get(&champion_id)?;
+    let section = best_section(sections, assigned_position)?;
+    let champ = champ_zh_by_id(champion_id, champions, names)
+        .unwrap_or_else(|| section.alias.clone());
+    let tier = section
+        .champion_tier
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("梯度{t} "))
+        .unwrap_or_default();
+
+    let keystone = section.runes.first().and_then(|rune| {
+        let keystone_id = *rune.selected_perk_ids.first()?;
+        let keystone = names.rune(keystone_id, "");
+        if keystone.is_empty() {
+            return None;
+        }
+        let tree = names.rune(rune.sub_style_id, "");
+        if tree.is_empty() {
+            Some(format!(" 常用基石:{keystone}"))
+        } else {
+            Some(format!(" 常用基石:{keystone}+{tree}系"))
+        }
+    });
+
+    Some(format!(
+        "{champ}·{}: {tier}胜率{} 样本{}场{}",
+        position_label(&section.position),
+        section.win_rate,
+        section.pick_count,
+        keystone.unwrap_or_default()
+    ))
+}
+
+/// Rune page detail for one OP.GG rune entry:
+/// "符文1(选用2345,胜率52.1%): 电刑,血之滋味,眼球收集器,无情猎手(主宰)+饼干配送,时间扭曲补药(启迪)+自适应之力x2,护甲"
+fn render_opgg_rune(idx: usize, rune: &crate::builds::Rune, names: &StaticNames) -> String {
+    let perks = &rune.selected_perk_ids;
+    let render = |slice: &[i64]| {
+        slice
+            .iter()
+            .map(|id| names.rune(*id, "").to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+    };
+
+    let primary = render(perks.get(..4).unwrap_or(&[]));
+    let secondary = render(perks.get(4..6).unwrap_or(&[]));
+    let stats = render(perks.get(6..9).unwrap_or(&[]));
+    let primary_tree = names.rune(rune.primary_style_id, "主系");
+    let sub_tree = names.rune(rune.sub_style_id, "副系");
+
+    let mut parts = Vec::new();
+    if !primary.is_empty() {
+        parts.push(format!("{}({})", primary.join(","), primary_tree));
     }
+    if !secondary.is_empty() {
+        parts.push(format!("{}({})", secondary.join(","), sub_tree));
+    }
+    if !stats.is_empty() {
+        parts.push(format!("属性:{}", stats.join(",")));
+    }
+
+    format!(
+        "符文{}(选用{},胜率{}): {}",
+        idx + 1,
+        rune.pick_count,
+        rune.win_rate,
+        parts.join(" + ")
+    )
+}
+
+/// Item build blocks translated to Chinese item names:
+/// "标准出装: [starter]多兰之戒,生命药水 -> [core]卢登的激荡,影焰"
+pub fn render_build_reference(build: &crate::builds::ItemBuild, names: &StaticNames) -> String {
+    let blocks = build
+        .blocks
+        .iter()
+        .map(|block| {
+            let items = block
+                .items
+                .as_ref()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| {
+                            item.id
+                                .parse::<i64>()
+                                .ok()
+                                .and_then(|id| names.item(id).map(str::to_string))
+                                .unwrap_or_else(|| item.id.clone())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "...".to_string());
+            format!("[{}]{items}", block.type_field)
+        })
+        .collect::<Vec<_>>()
+        .join(" -> ");
+    format!("{}: {}", build.title, blocks)
+}
+
+/// Full detail block for the local player during champ select.
+pub fn render_opgg_detail(
+    champion_id: i64,
+    assigned_position: &str,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+) -> Option<String> {
+    let sections = sections_map.get(&champion_id)?;
+    let section = best_section(sections, assigned_position)?;
+    let champ = champ_zh_by_id(champion_id, champions, names)
+        .unwrap_or_else(|| section.alias.clone());
+
+    let mut lines = vec![format!(
+        "{champ}·{}: 梯度{} 胜率{} 样本{}场",
+        position_label(&section.position),
+        section.champion_tier.as_deref().filter(|t| !t.is_empty()).unwrap_or("未知"),
+        section.win_rate,
+        section.pick_count
+    )];
+
+    for (idx, rune) in section.runes.iter().take(2).enumerate() {
+        lines.push(render_opgg_rune(idx, rune, names));
+    }
+
+    if let Some(skills) = section.skills.as_ref().filter(|s| !s.is_empty()) {
+        lines.push(format!("技能加点: {}", skills.join(">")));
+    }
+
+    if let Some(spells) = section.spells.as_ref().filter(|s| !s.is_empty()) {
+        lines.push(format!("推荐召唤师技能: {}", spells.join("/")));
+    }
+
+    if let Some(build) = section.item_builds.first() {
+        lines.push(render_build_reference(build, names));
+    }
+
+    Some(lines.join("\n"))
+}
+
+/// Matchup statistics between the local champion and the lane opponent,
+/// taken from OP.GG counters data: first from the local champion's matchup
+/// list, falling back to the opponent's list (win rate mirrored).
+pub fn find_direct_matchup(
+    local_champion_id: i64,
+    local_position: &str,
+    opponent_champion_id: i64,
+    opponent_zh: &str,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+    champions: &ChampionsMap,
+) -> Option<String> {
+    if opponent_champion_id <= 0 {
+        return None;
+    }
+    let key_of = |champion_id: i64| -> String {
+        champions
+            .values()
+            .find(|c| c.key == champion_id.to_string())
+            .map(|c| c.id.to_lowercase())
+            .unwrap_or_default()
+    };
+    let opponent_key = key_of(opponent_champion_id);
+    let local_key = key_of(local_champion_id);
+
+    let win_rate_pct = |raw: &str| -> f64 {
+        raw.trim_end_matches('%').trim().parse::<f64>().unwrap_or(50.0)
+    };
+    // Look the target champion up in a matchup list, returning
+    // (our win-rate text, our win-rate pct, games), mirroring when the list
+    // belongs to the opponent (our win rate = 100 - theirs).
+    let find_in = |cs: &crate::builds::Counters,
+                   target_id: i64,
+                   target_key: &str,
+                   mirrored: bool|
+     -> Option<(String, f64, i64)> {
+        cs.matchups
+            .iter()
+            .find(|m| {
+                (m.champion_id > 0 && m.champion_id == target_id)
+                    || (!target_key.is_empty() && m.champion_key == target_key)
+            })
+            .map(|m| {
+                let pct = win_rate_pct(&m.win_rate);
+                if mirrored {
+                    (format!("{:.2}%", 100.0 - pct), 100.0 - pct, m.play)
+                } else {
+                    (m.win_rate.clone(), pct, m.play)
+                }
+            })
+    };
+
+    let section_lane = |cid: i64, pos: &str| -> Option<&BuildSection> {
+        sections_map.get(&cid).and_then(|s| best_section(s, pos))
+    };
+
+    // Prefer the local champion's own matchup list (win rate is their own).
+    if let Some(section) = section_lane(local_champion_id, local_position) {
+        if let Some(counters) = section.counters.as_ref() {
+            if let Some((win_rate, pct, play)) =
+                find_in(counters, opponent_champion_id, &opponent_key, false)
+            {
+                let verdict = if pct >= 50.0 { "优势对位" } else { "劣势对位" };
+                return Some(format!(
+                    "对位大数据(OP.GG {}): 你对{opponent_zh}胜率{win_rate}({play}场), {verdict}",
+                    position_label(&counters.position),
+                ));
+            }
+        }
+    }
+
+    // Fall back to the opponent's matchup list (their rate mirrors ours).
+    if let Some(section) = section_lane(opponent_champion_id, local_position) {
+        if let Some(counters) = section.counters.as_ref() {
+            if let Some((win_rate, pct, play)) =
+                find_in(counters, local_champion_id, &local_key, true)
+            {
+                let verdict = if pct >= 50.0 { "优势对位" } else { "劣势对位" };
+                return Some(format!(
+                    "对位大数据(OP.GG {},按对方数据换算): 你对{opponent_zh}胜率约{win_rate}(参考{play}场), {verdict}",
+                    position_label(&counters.position),
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+/// Ban-phase help: the top hardest matchups for the local champion from the
+/// OP.GG counters table (lowest win rate first, weak samples filtered out).
+pub fn ban_suggestions(
+    local_champion_id: i64,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+    limit: usize,
+) -> Option<String> {
+    if local_champion_id <= 0 {
+        return None;
+    }
+    let counters = sections_map
+        .get(&local_champion_id)?
+        .iter()
+        .find_map(|s| s.counters.as_ref())?;
+
+    const MIN_GAMES: i64 = 20;
+    let mut hard: Vec<&crate::builds::Matchup> = counters
+        .matchups
+        .iter()
+        .filter(|m| {
+            m.play >= MIN_GAMES
+                && m.win_rate
+                    .trim_end_matches('%')
+                    .parse::<f64>()
+                    .map(|pct| pct < 50.0)
+                    .unwrap_or(false)
+        })
+        .collect();
+    hard.sort_by(|a, b| {
+        let pct = |m: &crate::builds::Matchup| {
+            m.win_rate.trim_end_matches('%').parse::<f64>().unwrap_or(50.0)
+        };
+        pct(a).total_cmp(&pct(b))
+    });
+    if hard.is_empty() {
+        return None;
+    }
+
+    let name_of = |m: &crate::builds::Matchup| -> Option<String> {
+        if m.champion_id > 0 {
+            if let Some(zh) = champ_zh_by_id(m.champion_id, champions, names) {
+                return Some(zh);
+            }
+        }
+        // crawled without ids: resolve through the champions map by slug
+        let by_key = champions
+            .values()
+            .find(|c| c.id.to_lowercase() == m.champion_key)?;
+        champ_zh_by_id(by_key.key.parse().ok()?, champions, names)
+    };
+
+    let entries = hard
+        .iter()
+        .take(limit)
+        .map(|m| {
+            let name = name_of(m).unwrap_or_else(|| m.champion_key.clone());
+            format!("{name} {}({}场)", m.win_rate, m.play)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("Ban位参考(你最难打的对手): {entries}"))
+}
+
+/// Counter-system note for the lineup prompt / panel: opponent profile
+/// (tags + damage typing) plus the local rule engine's rune adjustment.
+/// Deterministic; no LLM involved.
+pub fn build_counter_note(
+    local_champion_id: i64,
+    local_position: &str,
+    opponent_champion_id: i64,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+    champions: &ChampionsMap,
+) -> Option<String> {
+    let opponent_info = champions
+        .values()
+        .find(|c| c.key == opponent_champion_id.to_string())?;
+    let profile = crate::counter::profile_of(opponent_info);
+    let tags = opponent_info
+        .tags
+        .iter()
+        .map(|t| crate::counter::tag_zh(t))
+        .filter(|t| *t != "未知")
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let sections = sections_map.get(&local_champion_id)?;
+    let base = best_rune_for_position(sections, local_position)?;
+    let plan = crate::counter::plan_for_matchup(
+        base,
+        local_champion_id,
+        local_position,
+        opponent_champion_id,
+        &opponent_info.id.to_lowercase(),
+        Some(&profile),
+        sections_map,
+    )?;
+
+    let mut line = format!(
+        "符文针对(counter规则, 敌方{}·{},对位{}): {}",
+        if tags.is_empty() { "未知类型" } else { &tags },
+        profile.damage.label_zh(),
+        plan.pressure.label_zh(),
+        plan.line,
+    );
+    // 与主流页的差异明细(用户要求: 不同就要说明哪里不一样)
+    if !plan.diffs.is_empty() {
+        line.push_str(&format!(" [{}]", plan.diffs.join("; ")));
+    }
+    if let Some(reason) = plan.reasons.first() {
+        line.push_str(&format!(" — {reason}"));
+    }
+    Some(line)
+}
+
+// ---------------------------------------------------------------------------
+//  Champ select prompt
+// ---------------------------------------------------------------------------
+
+fn render_rune_page(page: &Value, names: &StaticNames) -> Option<String> {
+    let perk_ids: Vec<i64> = page
+        .get("selectedPerkIds")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_i64)
+        .collect();
+    if perk_ids.is_empty() {
+        return None;
+    }
+
+    let rune_names: Vec<String> = perk_ids
+        .iter()
+        .map(|id| names.rune(*id, "").to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if rune_names.is_empty() {
+        return None;
+    }
+
+    let primary_tree = names.rune(
+        page.get("primaryStyleId").and_then(Value::as_i64).unwrap_or(0),
+        "",
+    );
+    let sub_tree = names.rune(
+        page.get("subStyleId").and_then(Value::as_i64).unwrap_or(0),
+        "",
+    );
+    let trees = match (primary_tree.is_empty(), sub_tree.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => primary_tree,
+        (true, false) => sub_tree,
+        (false, false) => format!("{primary_tree}+{sub_tree}"),
+    };
+
+    Some(format!("{trees}: {}", rune_names.join(",")))
 }
 
 pub fn build_lineup_prompt(
     session: &Value,
     champions: &ChampionsMap,
+    names: &StaticNames,
+    local_rune_page: Option<&Value>,
+    ranks: &HashMap<i64, String>,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+    atlas: &PlaystyleAtlas,
 ) -> anyhow::Result<String> {
-    let my_team = parse_team(session.get("myTeam"), champions);
-    let enemy_team = parse_team(session.get("theirTeam"), champions);
+    let snapshot = ChampSelectSnapshot::from_session(session)?;
 
-    if my_team.is_empty() || enemy_team.is_empty() {
-        bail!("champ select session does not contain both teams");
-    }
+    let ban_names = |bans: &[i64]| {
+        bans.iter()
+            .filter_map(|id| champ_zh_by_id(*id, champions, names))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let my_bans = ban_names(&snapshot.my_bans);
+    let their_bans = ban_names(&snapshot.their_bans);
 
-    let local_cell_id = session
-        .get("localPlayerCellId")
-        .and_then(Value::as_i64)
-        .context("champ select session missing localPlayerCellId")?;
-
-    let local_player = session
-        .get("myTeam")
-        .and_then(Value::as_array)
-        .and_then(|members| {
-            members
-                .iter()
-                .find(|member| member.get("cellId").and_then(Value::as_i64) == Some(local_cell_id))
-        })
-        .map(|member| {
-            let champion_id = member.get("championId").and_then(Value::as_i64).unwrap_or(0);
-            let position = member
-                .get("assignedPosition")
-                .and_then(Value::as_str)
-                .unwrap_or("UNKNOWN");
-            format!("{} ({})", champion_name(champion_id, champions), position)
-        })
-        .unwrap_or_else(|| "Unknown local player".to_string());
-
-    Ok(format!(
-        "阶段: 英雄选择\n我方阵容:\n{}\n\n敌方阵容:\n{}\n\n本局玩家: {}\n\n请给出对线战斗技巧、装备思路，以及控龙/控虫策略。",
-        my_team.join("\n"),
-        enemy_team.join("\n"),
-        local_player
-    ))
-}
-
-pub fn build_live_game_prompt(
-    game_data: &Value,
-    item_names: &HashMap<String, String>,
-) -> anyhow::Result<String> {
-    let players = game_data
-        .get("allPlayers")
-        .and_then(Value::as_array)
-        .context("Live Client Data missing allPlayers")?;
-
-    if players.is_empty() {
-        bail!("Live Client Data allPlayers is empty");
-    }
-
-    let mut order_team = Vec::new();
-    let mut chaos_team = Vec::new();
-
-    for player in players {
-        let champion = player
-            .get("championName")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown");
-        let position = player
-            .get("position")
-            .and_then(Value::as_str)
-            .unwrap_or("UNKNOWN");
-        let level = player
-            .get("level")
-            .and_then(Value::as_i64)
-            .unwrap_or(1);
-        let items = player
-            .get("items")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.get("itemID").and_then(Value::as_i64))
-                    .filter(|item_id| *item_id > 0)
-                    .map(|item_id| {
-                        let id = item_id.to_string();
-                        item_names
-                            .get(&id)
-                            .cloned()
-                            .unwrap_or_else(|| format!("item {id}"))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",")
+    let render_member = |member: &ChampSelectMember| -> String {
+        let champ = champ_zh_by_id(member.effective_champion(), champions, names)
+            .map(|zh| {
+                if member.champion_id > 0 {
+                    zh
+                } else {
+                    format!("{zh}(意向)")
+                }
             })
+            .unwrap_or_else(|| "未选择".to_string());
+        let rank = ranks
+            .get(&member.summoner_id)
+            .map(|r| format!(", {r}"))
             .unwrap_or_default();
-
-        let line = if items.is_empty() {
-            format!("{champion} ({position}, LVL {level})")
+        let spells = if member.spell1_id > 0 || member.spell2_id > 0 {
+            format!(
+                ", {}/{}",
+                spell_zh_by_id(member.spell1_id),
+                spell_zh_by_id(member.spell2_id)
+            )
         } else {
-            format!("{champion} ({position}, LVL {level}, items: {items})")
+            String::new()
         };
+        format!(
+            "- {champ}({}{}{})",
+            position_label(&member.assigned_position),
+            rank,
+            spells
+        )
+    };
 
-        match player.get("team").and_then(Value::as_str) {
-            Some("ORDER") => order_team.push(line),
-            Some("CHAOS") => chaos_team.push(line),
-            _ => {}
+    let my_team: Vec<String> = snapshot.my_team.iter().map(render_member).collect();
+    let their_team: Vec<String> = snapshot.their_team.iter().map(render_member).collect();
+
+    let local = snapshot.local_member().context("champ select session missing local player")?;
+    let local_champion_id = local.effective_champion();
+    let local_champ = champ_zh_by_id(local_champion_id, champions, names)
+        .unwrap_or_else(|| format!("英雄{local_champion_id}"));
+    let local_position = position_label(&local.assigned_position);
+
+    let mut local_line = format!("本机玩家: {local_champ}({local_position})");
+    if let Some(page) = local_rune_page.and_then(|page| render_rune_page(page, names)) {
+        local_line.push_str(&format!(", 当前符文页: {page}"));
+    }
+
+    let mut matchup_line = String::new();
+    if let Some(opponent) = snapshot.lane_opponent() {
+        let opponent_id = opponent.effective_champion();
+        if let Some(opponent_champ) = champ_zh_by_id(opponent_id, champions, names) {
+            matchup_line = format!(
+                "对位: 敌方{} {opponent_champ}",
+                position_label(&opponent.assigned_position)
+            );
+            if let Some(matchup) = find_direct_matchup(
+                local_champion_id,
+                &local.assigned_position,
+                opponent_id,
+                &opponent_champ,
+                sections_map,
+                champions,
+            ) {
+                matchup_line.push('\n');
+                matchup_line.push_str(&matchup);
+            }
+            if let Some(note) = build_counter_note(
+                local_champion_id,
+                &local.assigned_position,
+                opponent_id,
+                sections_map,
+                champions,
+            ) {
+                matchup_line.push('\n');
+                matchup_line.push_str(&note);
+            }
+            // 心理图谱: 对面英雄的意图/软肋(问 LLM 该识破什么, 而不是猜)
+            if let Some(intel) = atlas.render_for_prompt(&opponent_id.to_string(), &opponent_champ)
+            {
+                matchup_line.push('\n');
+                matchup_line.push_str(&intel);
+            }
+            // 心战星环: 我方战略 + 敌方战略/心理 + 压力战术(三十六计)
+            if let (Some(own_info), Some(opp_info)) = (
+                champions.values().find(|c| c.key == local_champion_id.to_string()),
+                champions.values().find(|c| c.key == opponent_id.to_string()),
+            ) {
+                let pressure = crate::counter::pressure_of_matchup(
+                    local_champion_id,
+                    &local.assigned_position,
+                    opponent_id,
+                    &opp_info.id.to_lowercase(),
+                    sections_map,
+                );
+                let card = crate::war::WarSystem::load().war_card(own_info, opp_info, &pressure);
+                matchup_line.push('\n');
+                matchup_line.push_str(&crate::war::render_for_prompt(&card));
+            }
         }
     }
 
-    if order_team.is_empty() || chaos_team.is_empty() {
+    if let Some(bans) = ban_suggestions(local_champion_id, sections_map, champions, names, 3) {
+        matchup_line.push('\n');
+        matchup_line.push_str(&bans);
+    }
+
+    // OP.GG backend stats: detail for the local champion, one-liners for everyone else.
+    let mut meta_lines: Vec<String> = Vec::new();
+    if let Some(detail) = render_opgg_detail(
+        local_champion_id,
+        &local.assigned_position,
+        champions,
+        names,
+        sections_map,
+    ) {
+        meta_lines.push(format!("[本机英雄数据]\n{detail}"));
+    }
+    for member in snapshot.my_team.iter().chain(snapshot.their_team.iter()) {
+        let champion_id = member.effective_champion();
+        if champion_id == local_champion_id || champion_id <= 0 {
+            continue;
+        }
+        if let Some(line) =
+            render_opgg_summary(champion_id, &member.assigned_position, champions, names, sections_map)
+        {
+            meta_lines.push(line);
+        }
+    }
+    let meta_block = if meta_lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nOP.GG数据参考(当前版本):\n{}", meta_lines.join("\n"))
+    };
+
+    Ok(format!(
+        "阶段: 英雄选择\nBan: 我方[{my_bans}] 敌方[{their_bans}]\n我方阵容:\n{}\n\n敌方阵容:\n{}\n\n{local_line}\n{matchup_line}{meta_block}\n\n请输出: 1.对位分析(本机英雄对位要点) 2.符文建议(与当前符文页对比指出要换的符文) 3.出装与召唤师技能建议",
+        my_team.join("\n"),
+        their_team.join("\n"),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+//  Live game prompt (full allgamedata)
+// ---------------------------------------------------------------------------
+
+pub fn build_live_game_prompt(
+    game_data: &Value,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+    local_sections: Option<&HashMap<i64, Vec<BuildSection>>>,
+    local_champion_id: i64,
+    atlas: &PlaystyleAtlas,
+) -> anyhow::Result<String> {
+    let snapshot = LiveSnapshot::from_all_game_data(game_data)?;
+
+    let local = snapshot.local_player();
+    let local_team = local.map(|p| p.team.as_str()).unwrap_or("ORDER");
+
+    let render_player = |player: &LivePlayer| -> String {
+        let champ = champ_zh_by_display(&player.champion_name, champions, names);
+        let keystone = names.rune(player.keystone_id, &player.keystone_name);
+        let primary_tree = names.rune(player.primary_tree_id, &player.primary_tree_name);
+        let rune_text = if primary_tree.is_empty() {
+            keystone
+        } else {
+            format!("{keystone}+{primary_tree}")
+        };
+        let death = if player.is_dead {
+            format!(", 阵亡{:.0}s重生", player.respawn_timer)
+        } else {
+            String::new()
+        };
+        format!(
+            "- {champ}({}, Lv{}, {}, {}刀, {rune_text}, {}/{}, 装备:{}{death})",
+            position_label(&player.position),
+            player.level,
+            player.kda(),
+            player.creep_score,
+            spell_zh_by_display(&player.spell_one),
+            spell_zh_by_display(&player.spell_two),
+            render_items(&player.items, names)
+        )
+    };
+
+    let allied_team: Vec<String> = snapshot
+        .team_players(local_team)
+        .into_iter()
+        .map(render_player)
+        .collect();
+    let enemy_team = if local_team == "ORDER" { "CHAOS" } else { "ORDER" };
+    let enemy_players: Vec<String> = snapshot
+        .team_players(enemy_team)
+        .into_iter()
+        .map(render_player)
+        .collect();
+
+    if allied_team.is_empty() || enemy_players.is_empty() {
         bail!("Live Client Data does not contain both teams");
     }
 
-    let active_summoner = game_data
-        .get("activePlayer")
-        .and_then(|active| active.get("summonerName"))
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown");
-
-    let local_player = players
-        .iter()
-        .find(|player| {
-            player
-                .get("summonerName")
-                .and_then(Value::as_str)
-                == Some(active_summoner)
-        })
-        .and_then(|player| {
-            let champion = player.get("championName")?.as_str()?;
-            let position = player.get("position")?.as_str().unwrap_or("UNKNOWN");
-            Some(format!("{champion} ({position})"))
-        })
-        .unwrap_or_else(|| active_summoner.to_string());
-
-    let game_meta = game_data.get("gameData");
-    let game_mode = game_meta
-        .and_then(|meta| meta.get("gameMode"))
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown");
-    let game_time = game_meta
-        .and_then(|meta| meta.get("gameTime"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    let map_name = game_meta
-        .and_then(|meta| meta.get("mapName"))
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown");
-    let status = live_game_status(game_data);
     let environment = format!(
-        "游戏环境: 模式={}, 时间={}, 地图={}, 状态={}",
-        game_mode,
-        format_game_time(game_time),
-        map_name,
-        status
+        "游戏环境: 模式={}, 时间={}, 地图={}, 地形={}, 状态={}",
+        snapshot.game_mode,
+        format_game_time(snapshot.game_time),
+        snapshot.map_name,
+        if snapshot.map_terrain.is_empty() { "默认" } else { &snapshot.map_terrain },
+        if snapshot.ended { "已结束" } else { "进行中" }
     );
 
+    let my_kills = snapshot.team_kills(local_team);
+    let their_kills = snapshot.team_kills(enemy_team);
+
+    let objectives_line = |(label, obj): (&str, &TeamObjectives)| {
+        let dragons = obj
+            .dragons
+            .iter()
+            .map(|d| dragon_zh(d))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "{label}[小龙:{} 巢虫{} 先锋{} 男爵{} 塔{} 水晶{}]",
+            if dragons.is_empty() { "无".to_string() } else { dragons },
+            obj.void_grubs,
+            obj.heralds,
+            obj.barons,
+            obj.turrets,
+            obj.inhibitors
+        )
+    };
+    let (my_obj, their_obj) = if local_team == "ORDER" {
+        (&snapshot.order, &snapshot.chaos)
+    } else {
+        (&snapshot.chaos, &snapshot.order)
+    };
+
+    let mut local_lines: Vec<String> = Vec::new();
+    if let (Some(active), Some(local)) = (snapshot.active.as_ref(), snapshot.local_player()) {
+        let champ = champ_zh_by_display(&local.champion_name, champions, names);
+        let stat = |key: &str| format!("{:.0}", active.stats.get(key).copied().unwrap_or(0.0));
+        let attack_speed = format!("{:.2}", active.stats.get("attackSpeed").copied().unwrap_or(0.0));
+        let crit = format!("{:.0}", active.stats.get("critChance").copied().unwrap_or(0.0));
+
+        local_lines.push(format!(
+            "本机玩家: {champ}({}, Lv{}), 金币{:.0}, 加点Q{}W{}E{}R{}, 面板:攻强{} 法强{} 护甲{} 魔抗{} 攻速{} 暴击{}% 生命{}/{} 移速{}",
+            position_label(&local.position),
+            active.level.max(local.level),
+            active.current_gold,
+            active.q_level,
+            active.w_level,
+            active.e_level,
+            active.r_level,
+            stat("attackDamage"),
+            stat("abilityPower"),
+            stat("armor"),
+            stat("magicResist"),
+            attack_speed,
+            crit,
+            stat("currentHealth"),
+            stat("maxHealth"),
+            stat("moveSpeed"),
+        ));
+
+        let rune_names: Vec<String> = active
+            .full_runes
+            .iter()
+            .map(|(id, display)| names.rune(*id, display))
+            .collect();
+        if !rune_names.is_empty() {
+            local_lines.push(format!("本机符文: {}", rune_names.join(",")));
+        }
+    }
+
+    if let Some(opponent) = snapshot.lane_opponent() {
+        let champ = champ_zh_by_display(&opponent.champion_name, champions, names);
+        let keystone = names.rune(opponent.keystone_id, &opponent.keystone_name);
+        local_lines.push(format!(
+            "对位: 敌方{} {champ}(Lv{}, {}, {}刀, 基石:{keystone})",
+            position_label(&opponent.position),
+            opponent.level,
+            opponent.kda(),
+            opponent.creep_score,
+        ));
+
+        // OP.GG counter statistics for this exact matchup, when crawled.
+        if let (Some(sections_map), Some(local)) = (local_sections, snapshot.local_player()) {
+            if local_champion_id > 0 {
+                let opponent_id = champions
+                    .values()
+                    .find(|c| {
+                        c.name == opponent.champion_name || c.id == opponent.champion_name
+                    })
+                    .and_then(|c| c.key.parse::<i64>().ok())
+                    .unwrap_or(0);
+                if let Some(matchup) = find_direct_matchup(
+                    local_champion_id,
+                    &local.position,
+                    opponent_id,
+                    &champ,
+                    sections_map,
+                    champions,
+                ) {
+                    local_lines.push(matchup);
+                }
+            }
+        }
+
+        // 对位心理(意图/软肋): 告诉 LLM 对面"想干什么", 而不是让它猜
+        if let Some(key) = champions
+            .values()
+            .find(|c| c.name == opponent.champion_name || c.id == opponent.champion_name)
+            .map(|c| c.key.clone())
+        {
+            if let Some(intel) = atlas.render_for_prompt(&key, &champ) {
+                local_lines.push(intel);
+            }
+        }
+
+        // 心战: 战略 + 战术两件套进入实时建议
+        if let Some(local) = snapshot.local_player() {
+            if let (Some(own_info), Some(opp_info), Some(sections_map)) = (
+                champions
+                    .values()
+                    .find(|c| c.id == local.champion_name || c.name == local.champion_name),
+                champions
+                    .values()
+                    .find(|c| c.name == opponent.champion_name || c.id == opponent.champion_name),
+                local_sections,
+            ) {
+                let opponent_id = opp_info.key.parse::<i64>().unwrap_or(0);
+                let pressure = crate::counter::pressure_of_matchup(
+                    local_champion_id,
+                    &local.position,
+                    opponent_id,
+                    &opp_info.id.to_lowercase(),
+                    sections_map,
+                );
+                let card = crate::war::WarSystem::load().war_card(own_info, opp_info, &pressure);
+                local_lines.push(crate::war::render_for_prompt(&card));
+            }
+        }
+    }
+
+    let mut recent_line = String::new();
+    if !snapshot.recent_kills.is_empty() {
+        let resolve = |name: &str| -> String {
+            snapshot
+                .players
+                .iter()
+                .find(|p| p.summoner_name == name)
+                .map(|p| {
+                    let champ = champ_zh_by_display(&p.champion_name, champions, names);
+                    let side = if p.team == local_team { "我方" } else { "敌方" };
+                    format!("{side}{champ}")
+                })
+                .unwrap_or_else(|| name.to_string())
+        };
+        let kills: Vec<String> = snapshot
+            .recent_kills
+            .iter()
+            .map(|event| {
+                format!(
+                    "{} {}击杀{}",
+                    format_game_time(event.event_time),
+                    resolve(&event.killer),
+                    resolve(&event.victim)
+                )
+            })
+            .collect();
+        recent_line = format!("\n\n近期击杀: {}", kills.join("; "));
+    }
+
+    let first_blood_line = snapshot
+        .first_blood_by
+        .as_ref()
+        .map(|name| format!("一血: {name}"))
+        .unwrap_or_default();
+
+    let mut builds_reference = String::new();
+    if let (Some(sections_map), Some(local)) = (local_sections, snapshot.local_player()) {
+        if local_champion_id > 0 {
+            if let Some(sections) = sections_map.get(&local_champion_id) {
+                if let Some(section) = best_section(sections, &local.position) {
+                    if let Some(build) = section.item_builds.first() {
+                        builds_reference = format!(
+                            "\n出装参考(OP.GG:{}): {}",
+                            position_label(&section.position),
+                            render_build_reference(build, names)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let my_objectives = objectives_line(("我方", my_obj));
+    let their_objectives = objectives_line(("敌方", their_obj));
+    let local_block = local_lines.join("\n");
+    let allied = allied_team.join("\n");
+    let enemy = enemy_players.join("\n");
+    let first_blood_sep = if first_blood_line.is_empty() { "" } else { ", " };
+
     Ok(format!(
-        "{}\n\n我方实时阵容:\n{}\n\n敌方实时阵容:\n{}\n\n本局玩家: {}\n\n请根据当前等级阶段给出对应策略：1-3级对线技巧，3-5级对线策略，5-6级击杀策略，6-12级控小龙/潮虫/先锋，12-18级打团与边路带线。",
-        environment,
-        order_team.join("\n"),
-        chaos_team.join("\n"),
-        local_player
+        "{environment}\n\n比分: 我方{my_kills}杀 vs 敌方{their_kills}杀{first_blood_sep}{first_blood_line}\n资源: {my_objectives} {their_objectives}\n\n{local_block}\n\n我方实时阵容:\n{allied}\n\n敌方实时阵容:\n{enemy}{recent_line}{builds_reference}\n\n请按当前等级阶段给建议,并结合对位KDA/装备差和资源差给出对位分析与出装/打团策略。"
     ))
+}
+
+// ---------------------------------------------------------------------------
+//  UI match panel text (for the desktop window, not the LLM)
+// ---------------------------------------------------------------------------
+
+fn objectives_zh(obj: &TeamObjectives) -> String {
+    let dragons = obj
+        .dragons
+        .iter()
+        .map(|d| dragon_zh(d))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "龙:{} 巢虫{} 先锋{} 男爵{} 塔{} 水晶{}",
+        if dragons.is_empty() { "无".to_string() } else { dragons },
+        obj.void_grubs,
+        obj.heralds,
+        obj.barons,
+        obj.turrets,
+        obj.inhibitors
+    )
+}
+
+fn panel_player_line(player: &LivePlayer, champions: &ChampionsMap, names: &StaticNames) -> String {
+    let champ = champ_zh_by_display(&player.champion_name, champions, names);
+    let keystone = names.rune(player.keystone_id, &player.keystone_name);
+    let state = if player.is_dead {
+        format!(" 阵亡{:.0}s", player.respawn_timer)
+    } else {
+        String::new()
+    };
+    format!(
+        "{} Lv{} {} | {} | {}刀 | {} | {}/{} | {}{}",
+        champ,
+        player.level,
+        position_label(&player.position),
+        player.kda(),
+        player.creep_score,
+        keystone,
+        spell_zh_by_display(&player.spell_one),
+        spell_zh_by_display(&player.spell_two),
+        render_items(&player.items, names),
+        state
+    )
+}
+
+/// Compact live match summary for the main window's match panel.
+pub fn build_live_panel_text(
+    game_data: &Value,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+) -> anyhow::Result<String> {
+    let snapshot = LiveSnapshot::from_all_game_data(game_data)?;
+
+    let local = snapshot.local_player();
+    let local_team = local.map(|p| p.team.as_str()).unwrap_or("ORDER");
+    let enemy_team = if local_team == "ORDER" { "CHAOS" } else { "ORDER" };
+    let (my_obj, their_obj) = if local_team == "ORDER" {
+        (&snapshot.order, &snapshot.chaos)
+    } else {
+        (&snapshot.chaos, &snapshot.order)
+    };
+
+    let mut lines: Vec<String> = vec![format!(
+        "{} {} | 比分 我方{} vs 敌方{}",
+        if snapshot.ended { "已结束" } else { "对局中" },
+        format_game_time(snapshot.game_time),
+        snapshot.team_kills(local_team),
+        snapshot.team_kills(enemy_team)
+    )];
+
+    lines.push(format!(
+        "资源 我方[{}] | 敌方[{}]",
+        objectives_zh(my_obj),
+        objectives_zh(their_obj)
+    ));
+
+    if let (Some(local), Some(opponent)) = (snapshot.local_player(), snapshot.lane_opponent()) {
+        let you = champ_zh_by_display(&local.champion_name, champions, names);
+        let foe = champ_zh_by_display(&opponent.champion_name, champions, names);
+        let foe_state = if opponent.is_dead {
+            format!(" 阵亡{:.0}s", opponent.respawn_timer)
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "对位: {you} Lv{} {} {}刀  vs  {foe} Lv{} {} {}刀{foe_state}",
+            local.level,
+            local.kda(),
+            local.creep_score,
+            opponent.level,
+            opponent.kda(),
+            opponent.creep_score
+        ));
+    }
+
+    if let Some(active) = snapshot.active.as_ref() {
+        let rune_names: Vec<String> = active
+            .full_runes
+            .iter()
+            .map(|(id, display)| names.rune(*id, display))
+            .collect();
+        if !rune_names.is_empty() {
+            lines.push(format!(
+                "金币 {:.0} | 加点 Q{}W{}E{}R{} | 符文 {}",
+                active.current_gold,
+                active.q_level,
+                active.w_level,
+                active.e_level,
+                active.r_level,
+                rune_names.join(",")
+            ));
+        }
+    }
+
+    lines.push("—— 我方 ——".to_string());
+    for player in snapshot.team_players(local_team) {
+        lines.push(panel_player_line(player, champions, names));
+    }
+    lines.push("—— 敌方 ——".to_string());
+    for player in snapshot.team_players(enemy_team) {
+        lines.push(panel_player_line(player, champions, names));
+    }
+
+    if !snapshot.recent_kills.is_empty() {
+        let resolve = |name: &str| -> String {
+            snapshot
+                .players
+                .iter()
+                .find(|p| p.summoner_name == name)
+                .map(|p| champ_zh_by_display(&p.champion_name, champions, names))
+                .unwrap_or_else(|| name.to_string())
+        };
+        let kills: Vec<String> = snapshot
+            .recent_kills
+            .iter()
+            .map(|event| {
+                format!(
+                    "{} {}→{}",
+                    format_game_time(event.event_time),
+                    resolve(&event.killer),
+                    resolve(&event.victim)
+                )
+            })
+            .collect();
+        lines.push(format!("近期击杀: {}", kills.join("; ")));
+    }
+
+    Ok(lines.join("\n"))
+}
+
+/// Champ-select summary for the match panel while no live data exists yet.
+pub fn build_champ_select_panel_text(
+    session: &Value,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+    ranks: &HashMap<i64, String>,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+) -> anyhow::Result<String> {
+    let snapshot = ChampSelectSnapshot::from_session(session)?;
+
+    let ban_names = |bans: &[i64]| {
+        bans.iter()
+            .filter_map(|id| champ_zh_by_id(*id, champions, names))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    let render_member = |member: &ChampSelectMember| -> String {
+        let champ = champ_zh_by_id(member.effective_champion(), champions, names)
+            .map(|zh| {
+                if member.champion_id > 0 {
+                    zh
+                } else {
+                    format!("{zh}(意向)")
+                }
+            })
+            .unwrap_or_else(|| "未选择".to_string());
+        let rank = ranks
+            .get(&member.summoner_id)
+            .map(|r| format!(" {r}"))
+            .unwrap_or_default();
+        format!("{champ}({}{})", position_label(&member.assigned_position), rank)
+    };
+
+    let mut lines: Vec<String> = vec!["英雄选择中".to_string()];
+    lines.push(format!(
+        "ban 我方[{}] 敌方[{}]",
+        ban_names(&snapshot.my_bans),
+        ban_names(&snapshot.their_bans)
+    ));
+    lines.push("—— 我方 ——".to_string());
+    for member in &snapshot.my_team {
+        lines.push(render_member(member));
+    }
+    lines.push("—— 敌方 ——".to_string());
+    for member in &snapshot.their_team {
+        lines.push(render_member(member));
+    }
+
+    if let Some(local) = snapshot.local_member() {
+        let mut status = format!("本机位置: {}", position_label(&local.assigned_position));
+        if let Some(opponent) = snapshot.lane_opponent() {
+            if let Some(champ) = champ_zh_by_id(opponent.effective_champion(), champions, names) {
+                status.push_str(&format!(
+                    " | 对位: 敌方{} {champ}",
+                    position_label(&opponent.assigned_position)
+                ));
+            }
+        }
+        lines.push(status);
+
+        // During the ban phase the hovered champion drives the suggestion.
+        if let Some(bans) =
+            ban_suggestions(local.effective_champion(), sections_map, champions, names, 3)
+        {
+            lines.push(bans);
+        }
+        if let Some(opponent) = snapshot.lane_opponent() {
+            if let Some(note) = build_counter_note(
+                local.effective_champion(),
+                &local.assigned_position,
+                opponent.effective_champion(),
+                sections_map,
+                champions,
+            ) {
+                lines.push(note);
+            }
+        }
+    }
+
+    Ok(lines.join("\n"))
+}
+
+// ---------------------------------------------------------------------------
+//  Objective reminders (event-driven, template-based voice nudges)
+// ---------------------------------------------------------------------------
+
+/// Objective spawn schedule (seconds). Timers reflect the current season:
+/// elemental dragons every 5:00, void grubs at 6:00/12:00, Rift Herald at 15:00,
+/// Baron Nashor at 25:00. Reminders fire ~30s before the spawn.
+pub const DRAGON_INTERVAL: f64 = 300.0;
+pub const GRUB_SPAWNS: [f64; 2] = [360.0, 720.0];
+pub const HERALD_SPAWN: f64 = 900.0;
+pub const BARON_SPAWN: f64 = 1500.0;
+/// Announce this many seconds before an objective spawns.
+pub const REMINDER_LEAD: f64 = 30.0;
+/// Stop announcing a missed timer this many seconds past the spawn.
+pub const REMINDER_GRACE: f64 = 45.0;
+
+/// How important a reminder is; the UI tier filters on this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderKind {
+    /// First blood, dragon kills, baron kills.
+    EventKey,
+    /// Herald, void grubs, towers, inhibitors.
+    EventMinor,
+    /// Objective spawn countdowns.
+    Timer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reminder {
+    pub kind: ReminderKind,
+    pub text: String,
+}
+
+impl Reminder {
+    fn key(text: impl Into<String>) -> Self {
+        Self {
+            kind: ReminderKind::EventKey,
+            text: text.into(),
+        }
+    }
+
+    fn minor(text: impl Into<String>) -> Self {
+        Self {
+            kind: ReminderKind::EventMinor,
+            text: text.into(),
+        }
+    }
+
+    fn timer(text: impl Into<String>) -> Self {
+        Self {
+            kind: ReminderKind::Timer,
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct ReminderEngine {
+    announced: std::collections::HashSet<String>,
+    last_game_time: f64,
+    seeded: bool,
+}
+
+impl ReminderEngine {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Forget everything (called when the client leaves a game).
+    pub fn reset(&mut self) {
+        self.announced.clear();
+        self.last_game_time = 0.0;
+        self.seeded = false;
+    }
+
+    fn next_dragon_spawn(snapshot: &LiveSnapshot) -> f64 {
+        let last_kill = snapshot
+            .events_log
+            .iter()
+            .filter(|e| e.name == "DragonKill")
+            .map(|e| e.event_time)
+            .fold(0.0_f64, f64::max);
+        if last_kill > 0.0 {
+            return last_kill + DRAGON_INTERVAL;
+        }
+        let next = ((snapshot.game_time + 1.0) / DRAGON_INTERVAL).ceil() * DRAGON_INTERVAL;
+        next.max(DRAGON_INTERVAL)
+    }
+
+    fn announce_timer(
+        announced: &mut std::collections::HashSet<String>,
+        game_time: f64,
+        spawn_time: f64,
+        key: &str,
+        text: String,
+    ) -> Option<String> {
+        let late = game_time - spawn_time;
+        let due = game_time >= spawn_time - REMINDER_LEAD && late <= REMINDER_GRACE;
+        if !due || announced.contains(key) {
+            return None;
+        }
+        announced.insert(key.to_string());
+        Some(text)
+    }
+
+    /// Inspect the latest snapshot and return newly-due reminder texts.
+    /// The first snapshot of a game *seeds* known events without announcing them,
+    /// so attaching mid-game does not replay old events.
+    pub fn collect(
+        &mut self,
+        snapshot: &LiveSnapshot,
+        champions: &ChampionsMap,
+        names: &StaticNames,
+    ) -> Vec<Reminder> {
+        // Game time going backwards means a new match started.
+        if snapshot.ended || snapshot.game_time + 20.0 < self.last_game_time {
+            self.reset();
+            if snapshot.ended {
+                return Vec::new();
+            }
+        }
+        self.last_game_time = snapshot.game_time;
+
+        let local_team = snapshot
+            .local_player()
+            .map(|p| p.team.as_str())
+            .unwrap_or("ORDER");
+        let side_of = |team: &str| -> &str {
+            if team == local_team { "我方" } else { "敌方" }
+        };
+        let champ_of = |summoner: &str| -> String {
+            snapshot
+                .players
+                .iter()
+                .find(|p| p.summoner_name == summoner)
+                .map(|p| champ_zh_by_display(&p.champion_name, champions, names))
+                .unwrap_or_else(|| summoner.to_string())
+        };
+
+        let mut out = Vec::new();
+
+        for event in &snapshot.events_log {
+            // Void grubs arrive in bursts of 3 within seconds; bucket them.
+            let key = if event.name.contains("Horde") || event.name.contains("Grub") {
+                format!("grub-burst:{:.0}", event.event_time / 30.0)
+            } else {
+                format!("{}:{:.1}:{}:{}", event.name, event.event_time, event.killer, event.detail)
+            };
+            if self.announced.contains(&key) {
+                continue;
+            }
+            self.announced.insert(key);
+            if !self.seeded {
+                continue;
+            }
+
+            let side = side_of(&event.killer_team);
+            let reminder = match event.name.as_str() {
+                "FirstBlood" => {
+                    Some(Reminder::key(format!("一血出现:{}{}拿下", side, champ_of(&event.killer))))
+                }
+                "DragonKill" => {
+                    let dragon = dragon_zh(&event.detail);
+                    if event.killer_team == local_team {
+                        Some(Reminder::key(format!("我方击杀{dragon}")))
+                    } else {
+                        Some(Reminder::key(format!("敌方击杀{dragon},注意龙魂进度")))
+                    }
+                }
+                "BaronKill" => {
+                    if event.killer_team == local_team {
+                        Some(Reminder::key("我方击杀男爵,抱团推进".to_string()))
+                    } else {
+                        Some(Reminder::key("敌方击杀男爵,注意守塔防守".to_string()))
+                    }
+                }
+                "HeraldKill" => Some(Reminder::minor(format!("{side}击杀峡谷先锋"))),
+                name if name.contains("Horde") || name.contains("Grub") => {
+                    Some(Reminder::minor(format!("{side}拿下巢虫")))
+                }
+                "TurretKilled" => Some(Reminder::minor(format!("{side}推掉一座防御塔"))),
+                "InhibKilled" => Some(Reminder::minor(format!("{side}摧毁一座水晶"))),
+                _ => None,
+            };
+            if let Some(text) = reminder {
+                out.push(text);
+            }
+        }
+
+        // Spawn timers.
+        let dragon_spawn = Self::next_dragon_spawn(snapshot);
+        if let Some(text) = Self::announce_timer(
+            &mut self.announced,
+            snapshot.game_time,
+            dragon_spawn,
+            &format!("dragon:{dragon_spawn:.0}"),
+            "小龙将在30秒后刷新,提前集合布眼".to_string(),
+        ) {
+            out.push(Reminder::timer(text));
+        }
+
+        let fixed_timers: [(f64, &str, &str); 4] = [
+            (GRUB_SPAWNS[0], "grubs-1", "巢虫将在30秒后刷新,考虑呼叫打野控虫"),
+            (GRUB_SPAWNS[1], "grubs-2", "第二组巢虫将在30秒后刷新"),
+            (HERALD_SPAWN, "herald", "峡谷先锋将在30秒后刷新,提前站位"),
+            (BARON_SPAWN, "baron", "男爵将在30秒后刷新,注意排眼控视野"),
+        ];
+        for (spawn, key, text) in fixed_timers {
+            if let Some(line) = Self::announce_timer(
+                &mut self.announced,
+                snapshot.game_time,
+                spawn,
+                key,
+                text.to_string(),
+            ) {
+                out.push(Reminder::timer(line));
+            }
+        }
+
+        if !self.seeded {
+            self.seeded = true;
+            out.clear();
+        }
+
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Gameflow fallback prompt (when neither live data nor champ select is up)
+// ---------------------------------------------------------------------------
+
+pub fn build_gameflow_prompt(
+    session: &Value,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+) -> anyhow::Result<String> {
+    let game_data = session
+        .get("gameData")
+        .context("gameflow session missing gameData")?;
+
+    let phase = session
+        .get("phase")
+        .and_then(Value::as_str)
+        .unwrap_or("未知");
+
+    let render_team = |key: &str| -> Vec<String> {
+        game_data
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|team| {
+                team.iter()
+                    .filter_map(|member| member.get("championId").and_then(Value::as_i64))
+                    .filter(|id| *id > 0)
+                    .map(|id| {
+                        champ_zh_by_id(id, champions, names)
+                            .unwrap_or_else(|| format!("英雄{id}"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let team_one = render_team("teamOne");
+    let team_two = render_team("teamTwo");
+
+    if team_one.is_empty() && team_two.is_empty() {
+        bail!("gameflow session contains no team data");
+    }
+
+    let queue_name = game_data
+        .get("queue")
+        .and_then(|q| q.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    Ok(format!(
+        "对局阶段: {phase}{queue_part}(对局数据暂不可用,仅游戏流程信息,无KDA/装备/资源)\n我方: {}\n敌方: {}",
+        team_one.join(","),
+        team_two.join(","),
+        queue_part = if queue_name.is_empty() {
+            String::new()
+        } else {
+            format!(" 模式:{queue_name}")
+        }
+    ))
+}
+
+// ---------------------------------------------------------------------------
+//  Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builds::{Block, Counters, Item, Matchup, Rune};
+    use crate::web::ChampInfo;
+    use serde_json::json;
+
+    fn test_champions() -> ChampionsMap {
+        let mut map = ChampionsMap::new();
+        // (alias, key, name, tags, attack, magic) — profiles drive counter rules.
+        for (alias, key, name, tags, attack, magic) in [
+            ("Aatrox", "266", "Aatrox", vec!["Fighter"], 8, 3),
+            ("Zed", "238", "Zed", vec!["Assassin"], 9, 1),
+            ("Zoe", "142", "Zoe", vec!["Mage"], 2, 8),
+            ("Nami", "267", "Nami", vec!["Support", "Mage"], 3, 8),
+        ] {
+            map.insert(
+                alias.to_string(),
+                ChampInfo {
+                    id: alias.to_string(),
+                    key: key.to_string(),
+                    name: name.to_string(),
+                    tags: tags.iter().map(|s| s.to_string()).collect(),
+                    info: crate::web::ChampInfoStats {
+                        attack,
+                        defense: 0,
+                        magic,
+                        difficulty: 0,
+                    },
+                    ..ChampInfo::default()
+                },
+            );
+        }
+        map
+    }
+
+    fn test_names() -> StaticNames {
+        StaticNames {
+            champions_cn: HashMap::from([
+                ("266".to_string(), "暗裔剑魔".to_string()),
+                ("238".to_string(), "影流之主".to_string()),
+                ("142".to_string(), "佐伊".to_string()),
+                ("267".to_string(), "唤潮鲛姬".to_string()),
+            ]),
+            runes_cn: HashMap::from([
+                (8000, "精密".to_string()),
+                (8100, "主宰".to_string()),
+                (8200, "巫术".to_string()),
+                (8400, "坚决".to_string()),
+                (8010, "征服者".to_string()),
+                (8009, "凯旋".to_string()),
+                (8128, "电刑".to_string()),
+                (5008, "自适应之力".to_string()),
+                (5002, "护甲".to_string()),
+            ]),
+            items_cn: HashMap::from([
+                ("1055".to_string(), "多兰之刃".to_string()),
+                ("6692".to_string(), "暗行者之爪".to_string()),
+            ]),
+        }
+    }
+
+    fn sample_live_data() -> Value {
+        json!({
+            "activePlayer": {
+                "abilities": {"Q": {"abilityLevel": 3}, "W": {"abilityLevel": 1}, "E": {"abilityLevel": 2}, "R": {"abilityLevel": 1}},
+                "championStats": {"attackDamage": 187.0, "abilityPower": 0.0, "armor": 64.0, "magicResist": 30.0, "attackSpeed": 0.85, "critChance": 0.0, "currentHealth": 1426.0, "maxHealth": 1610.0, "moveSpeed": 345.0},
+                "currentGold": 2233.4,
+                "fullRunes": {
+                    "keystone": {"displayName": "Conqueror", "id": 8010},
+                    "generalRunes": [{"displayName": "Triumph", "id": 8009}],
+                    "primaryRuneTree": {"id": 8000},
+                    "secondaryRuneTree": {"id": 8400},
+                    "statRunes": [{"id": 5008}, {"id": 5002}]
+                },
+                "level": 8,
+                "summonerName": "Me"
+            },
+            "allPlayers": [
+                {
+                    "championName": "Aatrox", "isDead": false, "items": [{"itemID": 1055, "count": 1}],
+                    "level": 8, "position": "TOP", "respawnTimer": 0.0,
+                    "runes": {"keystone": {"id": 8010}, "primaryRuneTree": {"id": 8000}, "secondaryRuneTree": {"id": 8400}},
+                    "scores": {"assists": 0, "creepScore": 64, "deaths": 1, "kills": 3, "wardScore": 4.0},
+                    "summonerName": "Me",
+                    "summonerSpells": {"summonerSpellOne": {"displayName": "Flash"}, "summonerSpellTwo": {"displayName": "Teleport"}},
+                    "team": "ORDER"
+                },
+                {
+                    "championName": "Zed", "isDead": false, "items": [{"itemID": 6692, "count": 1}],
+                    "level": 9, "position": "TOP", "respawnTimer": 0.0,
+                    "runes": {"keystone": {"id": 8010}, "primaryRuneTree": {"id": 8000}, "secondaryRuneTree": {"id": 8100}},
+                    "scores": {"assists": 1, "creepScore": 80, "deaths": 2, "kills": 4, "wardScore": 2.0},
+                    "summonerName": "Foe",
+                    "summonerSpells": {"summonerSpellOne": {"displayName": "Flash"}, "summonerSpellTwo": {"displayName": "Ignite"}},
+                    "team": "CHAOS"
+                }
+            ],
+            "events": {"Events": [
+                {"EventName": "FirstBlood", "Recipient": "Foe"},
+                {"EventName": "ChampionKill", "EventTime": 300.0, "KillerName": "Me", "VictimName": "Foe"},
+                {"EventName": "DragonKill", "EventTime": 320.0, "KillerName": "Me", "DragonType": "Infernal"},
+                {"EventName": "HordeKill", "EventTime": 400.0, "KillerName": "Foe"},
+                {"EventName": "TurretKilled", "EventTime": 420.0, "KillerName": "Me"},
+                {"EventName": "BaronKill", "EventTime": 500.0, "KillerName": "Foe"}
+            ]},
+            "gameData": {"gameMode": "CLASSIC", "gameTime": 754.4, "mapName": "Map11"}
+        })
+    }
+
+    #[test]
+    fn live_prompt_contains_rich_state() {
+        let champions = test_champions();
+        let names = test_names();
+        let prompt = build_live_game_prompt(
+            &sample_live_data(),
+            &champions,
+            &names,
+            None,
+            0,
+            &crate::tips::PlaystyleAtlas::default(),
+        )
+        .unwrap();
+
+        // 对位 + KDA + 补刀
+        assert!(prompt.contains("对位: 敌方上单 影流之主(Lv9, 4/2/1, 80刀"));
+        // 本机金币 + 加点 + 面板
+        assert!(prompt.contains("金币2233"));
+        assert!(prompt.contains("Q3W1E2R1"));
+        // 中文符文名(来自静态名表)
+        assert!(prompt.contains("本机符文: 征服者,凯旋,自适应之力,护甲"));
+        // 资源与事件
+        assert!(prompt.contains("火龙"));
+        assert!(prompt.contains("男爵1"));
+        assert!(prompt.contains("近期击杀"));
+        assert!(prompt.contains("一血"));
+        // 中文英雄名 + 中文技能名 + 中文装备
+        assert!(prompt.contains("暗裔剑魔(上单, Lv8, 3/1/0, 64刀, 征服者+精密, 闪现/传送, 装备:多兰之刃)"));
+        assert!(prompt.contains("暗行者之爪"));
+    }
+
+    #[test]
+    fn lineup_prompt_contains_matchup_and_runes() {
+        let champions = test_champions();
+        let names = test_names();
+
+        let session = json!({
+            "localPlayerCellId": 0,
+            "bans": {"myTeamBans": [157], "theirTeamBans": [142]},
+            "myTeam": [
+                {"cellId": 0, "championId": 266, "assignedPosition": "middle", "summonerId": 11, "puuid": "p-me", "spell1Id": 4, "spell2Id": 14},
+                {"cellId": 1, "championId": 267, "assignedPosition": "utility", "summonerId": 22, "puuid": ""}
+            ],
+            "theirTeam": [
+                {"cellId": 5, "championId": 238, "assignedPosition": "middle", "summonerId": 0},
+                {"cellId": 6, "championId": 0, "assignedPosition": "top", "summonerId": 33}
+            ]
+        });
+
+        let rune_page = json!({
+            "primaryStyleId": 8100,
+            "subStyleId": 8200,
+            "selectedPerkIds": [8128, 8139, 8138, 8135, 8226, 8210, 5008, 5008, 5002]
+        });
+
+        let mut sections: HashMap<i64, Vec<BuildSection>> = HashMap::new();
+        sections.insert(
+            266,
+            vec![BuildSection {
+                position: "middle".to_string(),
+                champion_tier: Some("T2".to_string()),
+                win_rate: "50.3%".to_string(),
+                pick_count: 12345,
+                runes: vec![Rune {
+                    name: "标准符文".to_string(),
+                    position: "middle".to_string(),
+                    pick_count: 2345,
+                    win_rate: "52.1%".to_string(),
+                    primary_style_id: 8000,
+                    sub_style_id: 8400,
+                    selected_perk_ids: vec![8010, 8009, 9104, 8299, 8451, 8453, 5008, 5002],
+                    ..Rune::default()
+                }],
+                item_builds: vec![crate::builds::ItemBuild {
+                    title: "标准出装".to_string(),
+                    blocks: vec![Block {
+                        type_field: "starter".to_string(),
+                        items: Some(vec![Item { id: "1055".to_string(), count: 1 }]),
+                    }],
+                    ..crate::builds::ItemBuild::default()
+                }],
+                skills: Some(vec!["Q".to_string(), "W".to_string(), "E".to_string()]),
+                ..BuildSection::default()
+            }],
+        );
+        sections.insert(
+            238,
+            vec![BuildSection {
+                position: "mid".to_string(),
+                champion_tier: Some("T1".to_string()),
+                win_rate: "51.2%".to_string(),
+                pick_count: 5678,
+                runes: vec![Rune {
+                    position: "mid".to_string(),
+                    pick_count: 1000,
+                    win_rate: "51.8%".to_string(),
+                    primary_style_id: 8100,
+                    sub_style_id: 8200,
+                    selected_perk_ids: vec![8128],
+                    ..Rune::default()
+                }],
+                ..BuildSection::default()
+            }],
+        );
+
+        let ranks = HashMap::from([(11, "单双 黄金II".to_string())]);
+
+        let atlas = crate::tips::PlaystyleAtlas {
+            champions: std::collections::HashMap::from([(
+                "238".to_string(),
+                crate::tips::ChampIntel {
+                    title: "影流之主".to_string(),
+                    blurb: String::new(),
+                    ally_tips: vec!["劫依赖三级连招起手, 没有W时近乎无害".to_string()],
+                    enemy_tips: vec!["影流之主的影分身有空当, 趁放量期走位压制".to_string()],
+                },
+            )]),
+        };
+
+        let prompt = build_lineup_prompt(
+            &session,
+            &champions,
+            &names,
+            Some(&rune_page),
+            &ranks,
+            &sections,
+            &atlas,
+        )
+        .unwrap();
+        // 对位心理已注入(意图/软肋带标签)
+        assert!(prompt.contains("(意图)劫依赖三级连招起手"));
+        assert!(prompt.contains("(软肋)影流之主的影分身有空当"));
+
+        println!("{prompt}");
+        // 对位行
+        assert!(prompt.contains("对位: 敌方中单 影流之主"));
+        // 段位与召唤师技能
+        assert!(prompt.contains("暗裔剑魔(中单, 单双 黄金II, 闪现/点燃)"));
+        // 当前符文页中文名
+        assert!(prompt.contains("当前符文页: 主宰+巫术: 电刑"));
+        // OP.GG 细节: 梯度/胜率/符文/装备
+        assert!(prompt.contains("梯度T2 胜率50.3%"));
+        assert!(prompt.contains("符文1(选用2345,胜率52.1%): 征服者,凯旋(精密)"));
+        assert!(prompt.contains("技能加点: Q>W>E"));
+        assert!(prompt.contains("标准出装: [starter]多兰之刃"));
+        // 对位英雄摘要
+        assert!(prompt.contains("影流之主·中单: 梯度T1 胜率51.2% 样本5678场 常用基石:电刑"));
+        // ban 列表(敌方 ban 了 142 佐伊)
+        assert!(prompt.contains("敌方[佐伊]"));
+    }
+
+    #[test]
+    fn live_panel_renders_score_objectives_and_matchup() {
+        let champions = test_champions();
+        let names = test_names();
+        let panel = build_live_panel_text(&sample_live_data(), &champions, &names).unwrap();
+
+        assert!(panel.contains("对局中 12:34 | 比分 我方3 vs 敌方4"));
+        assert!(panel.contains("资源 我方[龙:火龙 巢虫0 先锋0 男爵0 塔1 水晶0]"));
+        assert!(panel.contains("对位: 暗裔剑魔 Lv8 3/1/0 64刀  vs  影流之主 Lv9 4/2/1 80刀"));
+        assert!(panel.contains("金币 2233 | 加点 Q3W1E2R1 | 符文 征服者,凯旋,自适应之力,护甲"));
+        assert!(panel.contains("暗裔剑魔 Lv8 上单 | 3/1/0 | 64刀 | 征服者 | 闪现/传送 | 多兰之刃"));
+        assert!(panel.contains("近期击杀"));
+    }
+
+    #[test]
+    fn champ_select_panel_lists_bans_teams_and_matchup() {
+        let champions = test_champions();
+        let names = test_names();
+        let session = json!({
+            "localPlayerCellId": 0,
+            "bans": {"myTeamBans": [157], "theirTeamBans": [142]},
+            "myTeam": [
+                {"cellId": 0, "championId": 266, "assignedPosition": "middle", "summonerId": 11},
+                {"cellId": 1, "championId": 267, "assignedPosition": "utility", "summonerId": 22}
+            ],
+            "theirTeam": [
+                {"cellId": 5, "championId": 238, "assignedPosition": "middle", "summonerId": 0},
+                {"cellId": 6, "championId": 0, "assignedPosition": "top", "summonerId": 33}
+            ]
+        });
+        let ranks = HashMap::from([(11, "单双 荣耀黄金II".to_string())]);
+        // Local champ (Aatrox) fields counters: panel should surface ban advice.
+        let sections: HashMap<i64, Vec<BuildSection>> =
+            HashMap::from([(266, vec![aatrox_section_with_counters()])]);
+
+        let panel =
+            build_champ_select_panel_text(&session, &champions, &names, &ranks, &sections).unwrap();
+
+        assert!(panel.contains("ban 我方[] 敌方[佐伊]"));
+        assert!(panel.contains("暗裔剑魔(中单 单双 荣耀黄金II)"));
+        assert!(panel.contains("影流之主(中单)"));
+        assert!(!panel.contains("本机位置: 中单 | 对位: 敌方中单 佐伊")); // 敌方中单是影流之主
+        assert!(panel.contains("本机位置: 中单 | 对位: 敌方中单 影流之主"));
+        // Ban suggestion derived from counters (Zed 46.47%/340场, Nami 60% filtered >50%).
+        assert!(panel.contains("Ban位参考(你最难打的对手): 影流之主 46.47%(340场)"));
+    }
+
+    fn live_snapshot_with(game_time: f64, events: Value) -> LiveSnapshot {
+        let mut data = sample_live_data();
+        data["gameData"]["gameTime"] = json!(game_time);
+        data["events"]["Events"] = events;
+        LiveSnapshot::from_all_game_data(&data).unwrap()
+    }
+
+    #[test]
+    fn reminder_engine_seeds_then_announces_new_events() {
+        let champions = test_champions();
+        let names = test_names();
+        let mut engine = ReminderEngine::new();
+
+        // Attach mid-game at 754s: existing events are seeded silently.
+        let first = engine.collect(
+            &live_snapshot_with(
+                754.4,
+                json!([
+                    {"EventName": "FirstBlood", "EventTime": 150.0, "Recipient": "Foe"},
+                    {"EventName": "DragonKill", "EventTime": 320.0, "KillerName": "Me", "DragonType": "Infernal"},
+                    {"EventName": "BaronKill", "EventTime": 600.0, "KillerName": "Foe"}
+                ]),
+            ),
+            &champions,
+            &names,
+        );
+        assert!(first.is_empty());
+
+        // A new dragon kill by the local team is announced exactly once.
+        let second = engine.collect(
+            &live_snapshot_with(
+                782.0,
+                json!([
+                    {"EventName": "FirstBlood", "EventTime": 150.0, "Recipient": "Foe"},
+                    {"EventName": "DragonKill", "EventTime": 320.0, "KillerName": "Me", "DragonType": "Infernal"},
+                    {"EventName": "BaronKill", "EventTime": 600.0, "KillerName": "Foe"},
+                    {"EventName": "DragonKill", "EventTime": 780.0, "KillerName": "Me", "DragonType": "Ocean"}
+                ]),
+            ),
+            &champions,
+            &names,
+        );
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].text, "我方击杀水龙");
+        assert_eq!(second[0].kind, ReminderKind::EventKey);
+
+        // Same snapshot again: nothing new.
+        let third = engine.collect(
+            &live_snapshot_with(
+                784.0,
+                json!([
+                    {"EventName": "FirstBlood", "EventTime": 150.0, "Recipient": "Foe"},
+                    {"EventName": "DragonKill", "EventTime": 320.0, "KillerName": "Me", "DragonType": "Infernal"},
+                    {"EventName": "BaronKill", "EventTime": 600.0, "KillerName": "Foe"},
+                    {"EventName": "DragonKill", "EventTime": 780.0, "KillerName": "Me", "DragonType": "Ocean"}
+                ]),
+            ),
+            &champions,
+            &names,
+        );
+        assert!(third.is_empty());
+    }
+
+    #[test]
+    fn reminder_engine_announces_grub_burst_once_and_timers() {
+        let champions = test_champions();
+        let names = test_names();
+        let mut engine = ReminderEngine::new();
+
+        // Seed at 200s.
+        let _ = engine.collect(&live_snapshot_with(200.0, json!([])), &champions, &names);
+
+        // 275s: next dragon spawns at 300 -> pre-spawn reminder fires.
+        let reminders = engine.collect(&live_snapshot_with(275.0, json!([])), &champions, &names);
+        assert!(reminders.iter().any(|r| {
+            r.kind == ReminderKind::Timer && r.text == "小龙将在30秒后刷新,提前集合布眼"
+        }));
+
+        // Same moment again: no duplicate.
+        let again = engine.collect(&live_snapshot_with(276.0, json!([])), &champions, &names);
+        assert!(!again.iter().any(|r| r.text == "小龙将在30秒后刷新,提前集合布眼"));
+
+        // Grubs killed as a burst of 3 -> one announcement only (enemy side).
+        engine.reset();
+        let _ = engine.collect(&live_snapshot_with(400.0, json!([])), &champions, &names);
+        let burst = engine.collect(
+            &live_snapshot_with(
+                500.0,
+                json!([
+                    {"EventName": "HordeKill", "EventTime": 370.0, "KillerName": "Foe"},
+                    {"EventName": "HordeKill", "EventTime": 371.0, "KillerName": "Foe"},
+                    {"EventName": "HordeKill", "EventTime": 372.0, "KillerName": "Foe"}
+                ]),
+            ),
+            &champions,
+            &names,
+        );
+        assert_eq!(
+            burst
+                .iter()
+                .filter(|r| r.kind == ReminderKind::EventMinor && r.text.contains("敌方拿下巢虫"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn reminder_engine_resets_on_new_game() {
+        let champions = test_champions();
+        let names = test_names();
+        let mut engine = ReminderEngine::new();
+
+        let _ = engine.collect(
+            &live_snapshot_with(
+                754.4,
+                json!([{"EventName": "FirstBlood", "EventTime": 150.0, "Recipient": "Foe"}]),
+            ),
+            &champions,
+            &names,
+        );
+
+        // New game: time jumped back -> engine re-seeds, no stale announcements.
+        let out = engine.collect(
+            &live_snapshot_with(
+                120.0,
+                json!([{"EventName": "FirstBlood", "EventTime": 110.0, "Recipient": "Me"}]),
+            ),
+            &champions,
+            &names,
+        );
+        assert!(out.is_empty());
+    }
+
+    fn aatrox_section_with_counters() -> crate::builds::BuildSection {
+        crate::builds::BuildSection {
+            alias: "aatrox".to_string(),
+            counters: Some(Counters {
+                position: "top".to_string(),
+                matchups: vec![
+                    Matchup {
+                        champion_id: 238,
+                        champion_key: "zed".to_string(),
+                        win_rate: "46.47%".to_string(),
+                        play: 340,
+                    },
+                    Matchup {
+                        // Ids unknown after a single-champion crawl: key acts as fallback.
+                        champion_id: 0,
+                        champion_key: "nami".to_string(),
+                        win_rate: "60.00%".to_string(),
+                        play: 320,
+                    },
+                ],
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn direct_matchup_reads_local_counters() {
+        let champions = test_champions();
+        let map: HashMap<i64, Vec<BuildSection>> =
+            HashMap::from([(266, vec![aatrox_section_with_counters()])]);
+
+        // Zed (238): below-50% win rate -> declared a losing matchup.
+        let line = find_direct_matchup(266, "top", 238, "影流之主", &map, &champions).unwrap();
+        assert!(line.contains("46.47%"), "{line}");
+        assert!(line.contains("(340场)"), "{line}");
+        assert!(line.contains("劣势对位"), "{line}");
+
+        // Nami entry has no id; matched via the OP.GG key; >50% -> advantage.
+        let line = find_direct_matchup(266, "top", 267, "唤潮鲛姬", &map, &champions).unwrap();
+        assert!(line.contains("优势对位"), "{line}");
+
+        // Unknown opponent -> no line instead of a wrong guess.
+        assert!(find_direct_matchup(266, "top", 142, "佐伊", &map, &champions).is_none());
+    }
+
+    #[test]
+    fn ban_suggestions_ranks_hardest_matchups() {
+        let champions = test_champions();
+        let names = test_names();
+        let map: HashMap<i64, Vec<BuildSection>> =
+            HashMap::from([(266, vec![aatrox_section_with_counters()])]);
+
+        let line = ban_suggestions(266, &map, &champions, &names, 3).unwrap();
+        // Only losing matchups with enough games; sorted by win rate ascending.
+        assert!(line.contains("影流之主 46.47%(340场)"), "{line}");
+        assert!(line.contains("Ban位参考"), "{line}");
+        assert!(!line.contains("60.00%"), "{line}"); // Nami: winning, not a ban target
+        // No data for unknown champion -> None.
+        assert!(ban_suggestions(238, &map, &champions, &names, 3).is_none());
+    }
+
+    #[test]
+    fn direct_matchup_mirrors_opponent_counters() {
+        let champions = test_champions();
+        let zed_section = BuildSection {
+            alias: "zed".to_string(),
+            ..Default::default()
+        };
+        let map: HashMap<i64, Vec<BuildSection>> = HashMap::from([
+            (238, vec![zed_section]),
+            (266, vec![aatrox_section_with_counters()]),
+        ]);
+
+        // Aatrox's list shows 46.47% vs Zed -> Zed's win rate is 100-46.47 = 53.53%.
+        let line = find_direct_matchup(238, "top", 266, "暗裔剑魔", &map, &champions).unwrap();
+        assert!(line.contains("53.53%"), "{line}");
+        assert!(line.contains("优势对位"), "{line}");
+        assert!(line.contains("按对方数据换算"), "{line}");
+    }
+
+    fn aatrox_counter_rune_sections() -> HashMap<i64, Vec<BuildSection>> {
+        let mut section = aatrox_section_with_counters();
+        // Base page: precision + inspiration shards (inspiration sub gets swapped out).
+        section.runes = vec![Rune {
+            position: "top".to_string(),
+            primary_style_id: 8000,
+            sub_style_id: 8300,
+            selected_perk_ids: vec![8010, 9111, 9105, 8299, 8345, 8347, 5008, 5008, 5001],
+            ..Rune::default()
+        }];
+        HashMap::from([(266, vec![section])])
+    }
+
+    #[test]
+    fn counter_note_describes_rule_engine_plan() {
+        let champions = test_champions();
+        let map = aatrox_counter_rune_sections();
+
+        // Aatrox vs Zed (Assassin, AD): 46.47%/340场 -> 劣势 + 抗压刺客规则.
+        let note = build_counter_note(266, "top", 238, &map, &champions).unwrap();
+        assert!(note.contains("刺客"), "{note}");
+        assert!(note.contains("物理"), "{note}");
+        assert!(note.contains("劣势"), "{note}");
+        assert!(note.contains("副系坚决"), "{note}");
+        assert!(note.contains("骸骨镀层+过度生长"), "{note}");
+        assert!(note.contains("防御碎片: 护甲"), "{note}");
+        // 差异取舍说明: 原副系启迪 神奇之鞋→骸骨镀层 etc.
+        assert!(note.contains("副系第1格: 饼干配送→骸骨镀层"), "{note}");
+        assert!(note.contains("防御碎片: 成长生命→护甲"), "{note}");
+
+        // Nami winning lane (优势/辅助·AP): 保持副系, 只调防御碎片为魔抗
+        let win_note = build_counter_note(266, "top", 267, &map, &champions).unwrap();
+        assert!(win_note.contains("优势"), "{win_note}");
+        assert!(win_note.contains("防御碎片: 魔抗"), "{win_note}");
+        assert!(!win_note.contains("副系坚决"), "{win_note}");
+
+        // Unknown opponent -> None.
+        assert!(build_counter_note(266, "top", 142, &map, &champions).is_none());
+    }
+
+    #[test]
+    fn counter_note_skips_when_mainstream_page_already_matches() {
+        let champions = test_champions();
+        let mut section = aatrox_section_with_counters();
+        // Second mainstream page is exactly the counter page (骸骨镀层, 过度生长, 护甲).
+        section.runes = vec![
+            Rune {
+                position: "top".to_string(),
+                primary_style_id: 8000,
+                sub_style_id: 8300,
+                selected_perk_ids: vec![8010, 9111, 9105, 8299, 8345, 8347, 5008, 5008, 5001],
+                ..Rune::default()
+            },
+            Rune {
+                position: "top".to_string(),
+                primary_style_id: 8000,
+                sub_style_id: 8400,
+                selected_perk_ids: vec![8010, 9111, 9105, 8299, 8473, 8451, 5008, 5008, 5002],
+                ..Rune::default()
+            },
+        ];
+        let map = HashMap::from([(266, vec![section])]);
+
+        // CP.Zed 刺客/AD 劣势 -> 方案与主流页第2页完全一致 -> 不再另行推荐。
+        assert!(build_counter_note(266, "top", 238, &map, &champions).is_none());
+    }
+
+    #[test]
+    fn gameflow_fallback_lists_teams() {
+        let champions = test_champions();
+        let names = test_names();
+        let session = json!({
+            "phase": "InProgress",
+            "gameData": {
+                "queue": {"name": "召唤师峡谷"},
+                "teamOne": [{"championId": 266}, {"championId": 267}],
+                "teamTwo": [{"championId": 238}, {"championId": 142}]
+            }
+        });
+
+        let prompt = build_gameflow_prompt(&session, &champions, &names).unwrap();
+        assert!(prompt.contains("我方: 暗裔剑魔,唤潮鲛姬"));
+        assert!(prompt.contains("敌方: 影流之主,佐伊"));
+    }
 }

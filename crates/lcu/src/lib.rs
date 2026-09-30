@@ -1,14 +1,20 @@
 pub mod advisor;
 pub mod builds;
+pub mod browser_sidecar;
 pub mod cmd;
 pub mod constants;
 pub mod deepseek;
 pub mod lcu_api;
 pub mod lcu_error;
 pub mod live_client;
+pub mod maohou;
+pub mod counter;
+pub mod match_context;
 pub mod source;
 pub mod task;
+pub mod tips;
 pub mod tts;
+pub mod war;
 pub mod web;
 
 pub use reqwest;

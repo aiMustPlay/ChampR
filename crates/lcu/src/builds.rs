@@ -26,11 +26,20 @@ pub struct BuildSection {
     pub alias: String,
     pub name: String,
     pub position: String,
+    // The three optional fields below are serde-default so records written
+    // before the crawler started filling them (or by older data sources
+    // lacking the keys) still deserialize instead of failing the whole fetch.
+    #[serde(default)]
     pub skills: Option<Vec<String>>,
+    #[serde(default)]
     pub spells: Option<Vec<String>>,
+    #[serde(default)]
     pub champion_tier: Option<String>,
     pub item_builds: Vec<ItemBuild>,
     pub runes: Vec<Rune>,
+    /// OP.GG lane counters (absent for champions whose counters were not crawled).
+    #[serde(default)]
+    pub counters: Option<Counters>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +71,30 @@ pub struct Block {
 pub struct Item {
     pub id: String,
     pub count: u8,
+}
+
+/// One lane matchup entry from OP.GG counters data (opponent + win rate).
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Matchup {
+    /// Riot champion id of the opponent (0 when the crawler could not resolve it).
+    pub champion_id: i64,
+    /// OP.GG champion slug (e.g. "yorick"), used as fallback key.
+    pub champion_key: String,
+    /// The section champion's win rate against this opponent, e.g. "44.20%".
+    pub win_rate: String,
+    pub play: i64,
+}
+
+/// Matchup table from the champion's OP.GG counters page
+/// (win rates are from the section champion's perspective).
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Counters {
+    /// Lane the counters were collected for (the page's default lane).
+    pub position: String,
+    /// All recorded matchups, sorted by games played (descending).
+    pub matchups: Vec<Matchup>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]

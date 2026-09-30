@@ -1,0 +1,75 @@
+# ChampR 本地 counter 符文规则库(内置默认)
+#
+# 覆盖方式: 复制本文件到 %APPDATA%\champr\counter-runes.toml 后编辑, 代码优先读用户版。
+#
+# 匹配语义:
+#   - pressure / opponent_tags / opponent_damage 均为 any-of; 不写 = 不限制。
+#     (schema 暂未支持 self_tags 等己方条件 —— 见 design doc "后续可以扩的方向")
+#   - 所有命中规则按 priority 从大到小排;
+#     首个带 [rules.set] 里 sub_tree 的规则决定副系两格, 首个带 shard 的规则决定防御碎片。
+#   - explain 最多取前 2 条打进说明。
+#
+# pressure: unknown 之外四档 hard_lose(<45%) lose(45~48.5) even(48.5~51.5) win(>51.5)
+# damage: ad(攻击) ap(魔法) mixed(混合), 来自 DDragon info.attack/magic
+#
+# shard: { ad = 护甲, ap = 魔抗, default = 成长生命 } —— 按对方伤害类型选
+# rune id 校验基于 crate 内置 rune_lattice.json, 写错行的规则会被丢弃并提示。
+
+[[rules]]
+name = "抗压刺客爆发"
+priority = 90
+pressure = ["hard_lose", "lose"]
+opponent_tags = ["Assassin"]
+explain = "敌方刺客爆发高: 副系换坚决, 骸骨镀层顶第一波, 过度生长叠血量"
+[rules.set]
+sub_tree = 8400
+sub_runes = [8473, 8451]   # 骸骨镀层 + 过度生长
+shard = { ad = 5002, ap = 5003, default = 5001 }
+
+[[rules]]
+name = "抗压法师消耗"
+priority = 80
+pressure = ["hard_lose", "lose"]
+opponent_tags = ["Mage"]
+explain = "敌方远程消耗: 副系坚决, 复苏之风回血抗消耗, 过度生长叠血量"
+[rules.set]
+sub_tree = 8400
+sub_runes = [8444, 8451]   # 复苏之风 + 过度生长
+shard = { ad = 5002, ap = 5003, default = 5001 }
+
+[[rules]]
+name = "抗压坦克控制"
+priority = 70
+pressure = ["hard_lose", "lose"]
+opponent_tags = ["Tank"]
+explain = "敌方坦克控制链: 副系坚决, 骸骨镀层减伤, 坚定给韧性与减速抗性"
+[rules.set]
+sub_tree = 8400
+sub_runes = [8473, 8242]   # 骸骨镀层 + 坚定
+shard = { ad = 5002, ap = 5003, default = 5001 }
+
+[[rules]]
+name = "劣势通用抗压"
+priority = 60
+pressure = ["hard_lose", "lose"]
+explain = "对位大数据处于劣势: 副系默认换坚决提高容错"
+[rules.set]
+sub_tree = 8400
+sub_runes = [8473, 8451]   # 骸骨镀层 + 过度生长
+shard = { ad = 5002, ap = 5003, default = 5001 }
+
+[[rules]]
+name = "优势对位保持"
+priority = 20
+pressure = ["win"]
+explain = "优势对位: 副系保留英雄主流配置, 防御碎片随对方伤害类型"
+[rules.set]
+shard = { ad = 5002, ap = 5003, default = 5001 }
+
+[[rules]]
+name = "均势微调"
+priority = 10
+pressure = ["even"]
+explain = "均势对位: 副系保持主流, 防御碎片随对方伤害类型保底"
+[rules.set]
+shard = { ad = 5002, ap = 5003, default = 5001 }

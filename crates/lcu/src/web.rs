@@ -39,11 +39,21 @@ pub struct ChampInfo {
     pub name: String,
     pub title: String,
     // pub blurb: String,
-    // pub info: Info,
+    pub info: ChampInfoStats,
     pub image: Image,
     pub tags: Vec<String>,
     // pub partype: String,
     // pub stats: Stats,
+}
+
+/// DDragon per-champion `info` block (0-10 ratings used for damage typing).
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChampInfoStats {
+    pub attack: i32,
+    pub defense: i32,
+    pub magic: i32,
+    pub difficulty: i32,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +234,90 @@ async fn fetch_item_names_for_version(
 pub async fn fetch_item_names() -> Result<HashMap<String, String>, FetchError> {
     let version = fetch_latest_data_dragon_version().await?;
     fetch_item_names_for_version(&version).await
+}
+
+/// Chinese static names resolved from Data Dragon, used to render prompts/TTS in Chinese.
+#[derive(Default, Debug, Clone)]
+pub struct StaticNames {
+    /// Numeric champion key -> Chinese display name (e.g. "266" -> "暗裔剑魔").
+    pub champions_cn: HashMap<String, String>,
+    /// Rune / rune-tree id -> Chinese name (e.g. 8010 -> "征服者", 8400 -> "坚决").
+    pub runes_cn: HashMap<i64, String>,
+    /// Item id -> Chinese name.
+    pub items_cn: HashMap<String, String>,
+}
+
+impl StaticNames {
+    pub fn champion(&self, key: &str) -> Option<&str> {
+        self.champions_cn.get(key).map(String::as_str)
+    }
+
+    pub fn rune(&self, id: i64, fallback: &str) -> String {
+        self.runes_cn
+            .get(&id)
+            .cloned()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    pub fn item(&self, item_id: i64) -> Option<&str> {
+        self.items_cn.get(&item_id.to_string()).map(String::as_str)
+    }
+}
+
+async fn fetch_zh_champion_names(version: &str) -> Result<HashMap<String, String>, FetchError> {
+    let url = format!("{DATA_DRAGON_BASE_URL}/cdn/{version}/data/zh_CN/champion.json");
+    if let Ok(resp) = reqwest::get(url).await {
+        if let Ok(data) = resp.json::<ChampionListResponse>().await {
+            return Ok(data
+                .data
+                .into_values()
+                .map(|champ| (champ.key, champ.name))
+                .collect());
+        }
+    }
+
+    Err(FetchError::Failed)
+}
+
+async fn fetch_zh_rune_names(version: &str) -> Result<HashMap<i64, String>, FetchError> {
+    let url = format!("{DATA_DRAGON_BASE_URL}/cdn/{version}/data/zh_CN/runesReforged.json");
+    if let Ok(resp) = reqwest::get(url).await {
+        if let Ok(trees) = resp.json::<Vec<DataDragonRune>>().await {
+            let mut names = HashMap::new();
+            for tree in trees {
+                names.insert(tree.id as i64, tree.name.clone());
+                for slot in tree.slots {
+                    for rune in slot.runes {
+                        names.insert(rune.id as i64, rune.name);
+                    }
+                }
+            }
+            return Ok(names);
+        }
+    }
+
+    Err(FetchError::Failed)
+}
+
+/// Fetch all zh_CN static names (champions, runes, items) in one shot.
+/// Individual failures yield an empty map for that category instead of failing everything.
+pub async fn fetch_static_names() -> StaticNames {
+    let Ok(version) = fetch_latest_data_dragon_version().await else {
+        return StaticNames::default();
+    };
+
+    let (champions, runes, items) = futures::join!(
+        fetch_zh_champion_names(&version),
+        fetch_zh_rune_names(&version),
+        fetch_item_names_for_version(&version),
+    );
+
+    StaticNames {
+        champions_cn: champions.unwrap_or_default(),
+        runes_cn: runes.unwrap_or_default(),
+        items_cn: items.unwrap_or_default(),
+    }
 }
 
 pub async fn fetch_champion_list() -> Result<ChampionsMap, FetchError> {

@@ -88,6 +88,25 @@ pub async fn get_gameflow_session(auth_url: &str) -> Result<Value, LcuError> {
     make_get_request(&endpoint).await
 }
 
+/// The rune page that is currently equipped in the client
+/// (`/lol-perks/v1/currentpage`).
+pub async fn get_current_rune_page(auth_url: &str) -> Result<Value, LcuError> {
+    let endpoint = format!("{auth_url}/lol-perks/v1/currentpage");
+    make_get_request(&endpoint).await
+}
+
+/// Summoner info by summoner id, used to resolve champion-select teammates.
+pub async fn get_summoner_by_id(auth_url: &str, summoner_id: i64) -> Result<Value, LcuError> {
+    let endpoint = format!("{auth_url}/lol-summoner/v2/summoners/{summoner_id}");
+    make_get_request(&endpoint).await
+}
+
+/// Ranked stats for a player (`/lol-ranked/v1/ranked-stats/{puuid}`).
+pub async fn get_ranked_stats(auth_url: &str, puuid: &str) -> Result<Value, LcuError> {
+    let endpoint = format!("{auth_url}/lol-ranked/v1/ranked-stats/{puuid}");
+    make_get_request(&endpoint).await
+}
+
 pub async fn apply_rune(endpoint: String, rune: Rune) -> Result<(), LcuError> {
     let runes: Value = make_get_request(&format!("{endpoint}/lol-perks/v1/pages")).await?;
 

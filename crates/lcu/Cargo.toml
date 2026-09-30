@@ -30,4 +30,7 @@ kv-log-macro = "1.0.7"
 powershell_script = "1.1.0"
 nanoid = "0.4.0"
 reqwest-websocket = "0.5.1"
+toml = "0.8"
+dirs = "5.0"
+zerovec = { version = "0.11.4", features = ["alloc"] }
 # vizia = { git = "https://github.com/vizia/vizia.git", rev = "7dccf72a9fe4e2c15569ce453e547fce49e20032" }
