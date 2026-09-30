@@ -1,36 +1,47 @@
 // 快速验证 server 数据库里 counters 数据是否真实存在(counter 符文引擎的燃料)。
-import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+// 用法: node scripts/check-counters.mjs  (python 走 DSH_PYTHON 或系统 python)
+import { writeFileSync, rmSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 
-const candidates = ['data/champr.db', 'crates/server/data/champr.db'];
-const dbFile = candidates.find(existsSync);
-if (!dbFile) {
-  console.log('NO_DB', candidates);
+const dbFile = path.resolve('data/champr.db');
+if (!existsSync(dbFile)) {
+  console.error('NO_DB', dbFile);
   process.exit(1);
 }
 console.log('db =', dbFile);
-// 用 Python 的 sqlite3(node 侧干净避免 better-sqlite3 依赖)
+
 const code = `
-import sqlite3, json, sys
-con = sqlite3.connect(${JSON.stringify(path.resolve(dbFile))})
-rows = con.execute("select name from sqlite_master where type='table'").fetchall()
-print('tables:', rows)
-total = 0
-with_counters = 0
-for (champ,) in con.execute("select champion from builds"):
+import sqlite3, json
+con = sqlite3.connect(${JSON.stringify(dbFile)})
+n = con.execute("select count(*) from champion_data").fetchone()[0]
+have, total_matchups, worst, best = 0, 0, None, None
+for (alias, p) in con.execute("select champion_alias, payload from champion_data"):
     try:
-        sections = json.loads(con.execute("select payload from builds where champion=?", (champ,)).fetchone()[0])
+        sections = json.loads(p)
     except Exception:
         continue
-    total += 1
-    if any(s.get('counters') for s in sections):
-        with_counters += 1
-print(f'champions_with_payload={total} with_counters={with_counters}')
+    cnt = 0
+    for s in sections:
+        cc = s.get("counters")
+        if isinstance(cc, dict):
+            cnt += len(cc.get("matchups", []))
+        elif isinstance(cc, list):
+            cnt += sum(len(x.get("matchups", [])) for x in cc)
+    total_matchups += cnt
+    if cnt > 0:
+        have += 1
+        if worst is None or cnt < worst[1]: worst = (alias, cnt)
+        if best is None or cnt > best[1]: best = (alias, cnt)
+print(f"champions={n} with_counters={have} total_matchups={total_matchups}")
+if worst: print("min:", worst, " max:", best)
 `;
+
 const script = path.resolve('scripts/_check_counters.py');
-import { writeFileSync } from 'node:fs';
 writeFileSync(script, code, 'utf8');
-const py = process.env.DSH_PYTHON || 'python';
-console.log(execSync(`${py} ${script}`).toString());
+try {
+  const py = process.env.DSH_PYTHON || 'python';
+  process.stdout.write(execSync(`"${py}" "${script}"`, { encoding: 'utf8' }));
+} finally {
+  rmSync(script, { force: true });
+}
