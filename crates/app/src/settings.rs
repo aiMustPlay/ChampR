@@ -44,7 +44,7 @@ pub struct Settings {
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
     #[serde(default)]
     pub reminder_tier: i32,
-    /// Show the always-on-top 340x220 mini match window while in game.
+    /// 对局期间置顶迷你窗(默认关: 游戏时间隐形; 仅多屏玩家主动勾选才弹到非游戏屏)。
     #[serde(default = "default_mini_live_window")]
     pub mini_live_window: bool,
     /// 固定窗口出现的显示器索引(-1 = 不固定, 跟随系统等默认行为)。
@@ -106,7 +106,8 @@ fn default_lmstudio_model() -> String {
 }
 
 fn default_mini_live_window() -> bool {
-    true
+    // 游戏时间隐形原则: 对局期间默认零窗口; 用户明确勾选后才启用迷你窗。
+    false
 }
 
 fn default_pinned_monitor() -> i32 {
