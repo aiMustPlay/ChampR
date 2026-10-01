@@ -453,7 +453,7 @@ export component SourcesWindow inherits Window {
 
                 LineEdit {
                     text: root.coach-input;
-                    placeholder-text: "向教练提问, 回车发送…";
+                    placeholder-text: "向大师提问, 回车发送…";
                     horizontal-stretch: 1;
                     edited(text) => {
                         root.coach-input = text;
@@ -473,7 +473,7 @@ export component SourcesWindow inherits Window {
                 }
 
                 if root.coach-busy : Text {
-                    text: "教练思考中…";
+                    text: "大师思考中…";
                     font-size: Tokens.f-aux;
                     color: Tokens.c-muted;
                 }
