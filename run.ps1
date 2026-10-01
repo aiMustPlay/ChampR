@@ -139,14 +139,26 @@ function Invoke-Pnpm {
 }
 
 function Start-Server {
-    if (Test-Cmd 'docker') {
-        Write-Step 'Starting the backend with Docker Compose'
-        & docker compose up -d --build
-        if ($LASTEXITCODE -ne 0) {
-            throw ("docker compose failed with exit code {0}" -f $LASTEXITCODE)
-        }
-        Write-Step 'Backend start requested. Health check: http://127.0.0.1:3030/health'
+    # 已在跑就静默复用, 不要二连启动
+    if (Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction SilentlyContinue) {
+        Write-Step 'Backend already listening on 3030, reuse it'
         return
+    }
+
+    # docker 命令存在 ≠ Docker Desktop 在跑: 先探活, daemon 没醒就退回 cargo
+    if (Test-Cmd 'docker') {
+        & docker version --format '{{.Server.Version}}' 2>$null | Out-Null
+        $dockerAlive = ($LASTEXITCODE -eq 0)
+        if ($dockerAlive) {
+            Write-Step 'Starting the backend with Docker Compose'
+            & docker compose up -d --build
+            if ($LASTEXITCODE -ne 0) {
+                throw ("docker compose failed with exit code {0}" -f $LASTEXITCODE)
+            }
+            Write-Step 'Backend start requested. Health check: http://127.0.0.1:3030/health'
+            return
+        }
+        Write-Step 'Docker installed but daemon not running, falling back to cargo'
     }
 
     if (Test-Cmd 'cargo') {
@@ -159,7 +171,7 @@ function Start-Server {
         return
     }
 
-    throw 'Neither docker nor cargo is available, so the backend cannot be started.'
+    throw 'Neither docker (daemon up) nor cargo is available, so the backend cannot be started.'
 }
 
 function Start-Crawler {

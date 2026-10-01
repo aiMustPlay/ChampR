@@ -3099,6 +3099,7 @@ async fn show_champion_runes(
         state,
         DEFAULT_SOURCE_VALUE.to_string(),
         champion_id,
+        0,
     )
     .await;
 }
@@ -3164,11 +3165,30 @@ fn pin_window_on_monitor(window: &slint::Window, m: &monitors::Monitor, anchor: 
 //  Fetch runes for a champion from a source and display them
 // ---------------------------------------------------------------------------
 
-async fn fetch_and_show_runes(
+/// 递归安全包装: 8s 重试的 tokio::spawn 要求 Future: Send + 'static,
+/// 直接自递归会造成环; 用 BoxFuture 把返回类型定下来。
+fn fetch_and_show_runes(
     runes_weak: Weak<RunesWindow>,
     state: SharedState,
     source: String,
     champion_id: i64,
+    attempt: u32,
+) -> futures_util::future::BoxFuture<'static, ()> {
+    Box::pin(fetch_and_show_runes_inner(
+        runes_weak,
+        state,
+        source,
+        champion_id,
+        attempt,
+    ))
+}
+
+async fn fetch_and_show_runes_inner(
+    runes_weak: Weak<RunesWindow>,
+    state: SharedState,
+    source: String,
+    champion_id: i64,
+    attempt: u32,
 ) {
     // Set loading state
     let weak = runes_weak.clone();
@@ -3241,13 +3261,37 @@ async fn fetch_and_show_runes(
                 }
             });
         }
-        Err(_) => {
+        Err(err) => {
+            // 反静默失败: 真因上状态行(server 没起/网络断/反序列化错都写清),
+            // 并在用户还在选这英雄时 8 秒后自动重试一次(server 可能慢起)。
+            let err_text = format!("{err:?}");
+            warn!("fetch_and_show_runes({champion_id}): {err_text}");
+            let hint = if err_text.contains("3030") || err_text.contains("connect") {
+                format!("符文数据加载失败: 后端服务未运行({err_text}); 检查 ChampR Server 窗口")
+            } else {
+                format!("符文数据加载失败: {err_text}")
+            };
             let weak = runes_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = weak.upgrade() {
                     win.set_rune_status(SharedString::from("error"));
+                    win.set_apply_rune_status(SharedString::from(&hint));
                 }
             });
+
+            if attempt == 0 {
+                let rw = runes_weak.clone();
+                let st = state.clone();
+                let src = source.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(8)).await;
+                    let current = st.lock().unwrap().current_champion_id;
+                    if current == champion_id && current > 0 {
+                        info!("retrying rune fetch for {champion_id} after 8s");
+                        fetch_and_show_runes(rw, st, src, champion_id, 1).await;
+                    }
+                });
+            }
         }
     }
 }
