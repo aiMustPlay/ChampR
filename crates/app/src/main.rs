@@ -1292,6 +1292,8 @@ async fn lcu_monitor_task(
     let mut current_champion_id: i64 = 0;
     let mut current_lcu_pid: Option<u32> = None;
     let mut auth_prompted_for_pid: Option<u32> = None;
+    // WS 连接失败去重: 只对新的 auth_url 报一次 warn。
+    let mut last_ws_err: Option<String> = None;
     // 排队就绪态守卫: 每次 InProgress 翻转只允许一次自动 accept。
     let mut ready_accept_done = false;
 
@@ -1724,7 +1726,20 @@ async fn lcu_monitor_task(
                 info!("WebSocket disconnected, will retry");
             }
             Err(e) => {
-                warn!("error creating WebSocket client: {:?}", e);
+                // 同一 auth_url 只报一次, 避免 LoL 下班期间 2.5s 刷爆日志
+                let key = current_auth_url.clone();
+                if last_ws_err.as_deref() != Some(key.as_str()) {
+                    warn!("error creating WebSocket client: {:?}", e);
+                    last_ws_err = Some(key);
+                }
+                // 客户端可能根本没起来(如刚启动时端口未监听):
+                // 清掉 auth_url 让下一轮走完整授权流程(拿最新端口 + 召唤师名)
+                current_auth_url.clear();
+                auth_prompted_for_pid = None;
+                {
+                    let mut s = state.lock().unwrap();
+                    s.auth_url.clear();
+                }
             }
         }
 
