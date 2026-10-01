@@ -490,10 +490,12 @@ fn main() {
     let launch_weak = sources_weak.clone();
     let launch_state = state.clone();
     sources_window.on_launch_lol_clicked(move || {
+        info!("launch-lol clicked (lol_running check next)");
         if lcu::cmd::check_if_lol_running() {
             // 客户端还在(包括对局中后台的 LeagueClientUx): 这次点击的
             // 语义是把客户端窗口唤到前台, 不再是一句静态提示。
             let activated = game_screen::activate_lol_client_window();
+            info!("LoL client already running; activate window -> {activated}");
             let w = launch_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = w.upgrade() {
@@ -508,28 +510,53 @@ fn main() {
             return;
         }
 
-        let w = launch_weak.clone();
+        // 启动路径要防丢日志 + 防堵 UI: 定位/拉起/UAC 都可能在
+        // spawn 内部同步等 UAC 确认(用户看不到提示时表现就是"点了没反应"),
+        // 整体挪到后台线程, UI 立即给出"正在启动"反馈。
         let preferred_path = {
             let s = launch_state.lock().unwrap();
             s.lol_launcher_path.clone()
         };
-        let result = if preferred_path.trim().is_empty() {
-            lcu::cmd::launch_lol_client()
-        } else {
-            lcu::cmd::launch_lol_client_with_path(Some(preferred_path.as_str()))
-        };
-        let launch_ok = result.is_ok();
-        let msg = match result {
-            Ok(path) => format!("LoL 客户端已启动: {}", path.display()),
-            Err(err) => format!("无法启动 LoL 客户端: {err}"),
-        };
-
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(win) = w.upgrade() {
-                win.set_launch_ok(launch_ok);
-                win.set_launch_status(SharedString::from(&msg));
-            }
-        });
+        {
+            let w = launch_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = w.upgrade() {
+                    win.set_launch_ok(true);
+                    win.set_launch_status(SharedString::from("正在启动 LoL... (留意 UAC 确认框)"));
+                }
+            });
+        }
+        let lw_worker = launch_weak.clone();
+        std::thread::Builder::new()
+            .name("lol-launch".into())
+            .spawn(move || {
+                info!(
+                    "launch-lol: preferred_path={:?} (empty = auto locate)",
+                    preferred_path
+                );
+                let result = if preferred_path.trim().is_empty() {
+                    lcu::cmd::launch_lol_client()
+                } else {
+                    lcu::cmd::launch_lol_client_with_path(Some(preferred_path.as_str()))
+                };
+                match &result {
+                    Ok(path) => info!("launch-lol: spawned {}", path.display()),
+                    Err(err) => warn!("launch-lol: ERROR {err}"),
+                }
+                let launch_ok = result.is_ok();
+                let msg = match result {
+                    Ok(path) => format!("LoL 客户端已启动: {}", path.display()),
+                    Err(err) => format!("无法启动 LoL 客户端: {err}"),
+                };
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = lw_worker.upgrade() {
+                        win.set_launch_ok(launch_ok);
+                        win.set_launch_status(SharedString::from(&msg));
+                    }
+                });
+            })
+            .map_err(|e| warn!("launch-lol: failed to spawn worker thread: {e}"))
+            .ok();
     });
 
     let tts_window_for_open = tts_settings_window.as_weak();
