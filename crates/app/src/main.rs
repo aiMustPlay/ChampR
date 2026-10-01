@@ -491,11 +491,18 @@ fn main() {
     let launch_state = state.clone();
     sources_window.on_launch_lol_clicked(move || {
         if lcu::cmd::check_if_lol_running() {
+            // 客户端还在(包括对局中后台的 LeagueClientUx): 这次点击的
+            // 语义是把客户端窗口唤到前台, 不再是一句静态提示。
+            let activated = game_screen::activate_lol_client_window();
             let w = launch_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = w.upgrade() {
                     win.set_launch_ok(true);
-                    win.set_launch_status(SharedString::from("LoL 客户端已在运行"));
+                    win.set_launch_status(SharedString::from(if activated {
+                        "已唤出 LoL 客户端窗口"
+                    } else {
+                        "LoL 在运行但没找到客户端窗口(可能在对局中)"
+                    }));
                 }
             });
             return;

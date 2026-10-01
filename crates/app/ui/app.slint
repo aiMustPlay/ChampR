@@ -307,10 +307,10 @@ export component SourcesWindow inherits Window {
                 }
 
                 Button {
-                    text: "🚀 启动 LoL";
+                    // 永不置灰: 未运行=启动, 已运行=把客户端窗口唤到前台
+                    text: root.lol-running ? "🚀 唤出 LoL 窗口" : "🚀 启动 LoL";
                     height: Tokens.btn-height;
                     horizontal-stretch: 1;
-                    enabled: !root.lol-running;
                     clicked => {
                         root.launch-lol-clicked();
                     }
