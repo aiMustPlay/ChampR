@@ -85,6 +85,10 @@ struct AppState {
     last_applied_plan_sig: String,
     /// Latest counter-rule rune plan for the current matchup (None when not actionable).
     counter_plan: Option<lcu::counter::RunePlan>,
+    /// 手动点选对位: 用户在符文窗 Counter 卡上点的敌方英雄 id。
+    /// 腾讯 LCU 可能把敌方分路藏起来导致自动对位失效时的人工兜底;
+    /// 我方换英雄/会话重建即清空。
+    manual_counter_target: Option<i64>,
     /// User closed the runes window during this champ-select; do not re-open
     /// it automatically until a new session starts.
     runes_window_dismissed: bool,
@@ -160,6 +164,7 @@ impl Default for AppState {
             last_auto_applied_champion: 0,
             last_applied_plan_sig: String::new(),
             counter_plan: None,
+    manual_counter_target: None,
             runes_window_dismissed: false,
             tts_config: tts::TtsConfig::default(),
             lol_launcher_path: r"C:\WeGameApps\英雄联盟（含经典模式）\WeGameLauncher\launcher.exe".to_string(),
@@ -1025,6 +1030,81 @@ fn main() {
         }
     });
 
+    // -- Runes window: 手动点选对位(用户指定"我这局打谁") --
+    // 自动识别履带失效(敌方分路隐藏/盲选)时的人工兜底。
+    let runes_pick_weak = runes_window.as_weak();
+    let state_pick = state.clone();
+    let handle_pick = rt_handle_ref.clone();
+    runes_window.on_counter_pick_opponent(move |enemy_cid| {
+        let (auth, me) = {
+            let mut s = state_pick.lock().unwrap();
+            if s.current_champion_id == 0 {
+                return;
+            }
+            s.manual_counter_target = Some(enemy_cid as i64);
+            (s.auth_url.clone(), s.current_champion_id)
+        };
+        if auth.is_empty() {
+            let weak = runes_pick_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak.upgrade() {
+                    win.set_apply_rune_status(SharedString::from("LCU 尚未连接"));
+                }
+            });
+            return;
+        }
+        info!("manual counter target picked: enemy {enemy_cid} vs my {me}");
+        let win_weak = runes_pick_weak.clone();
+        let state2 = state_pick.clone();
+        handle_pick.spawn(async move {
+            let session = match lcu::lcu_api::get_champ_select_session(&auth).await {
+                Ok(v) => v,
+                Err(e) => {
+                    let weak = win_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = weak.upgrade() {
+                            win.set_counter_status(SharedString::from(format!(
+                                "手动对位失败: 选人会话读不到({e:?})"
+                            )));
+                        }
+                    });
+                    return;
+                }
+            };
+            let (available, summary, status) = {
+                let mut s = state2.lock().unwrap();
+                let (plan, reason) =
+                    compute_counter_plan(Some(&session), &s, Some(enemy_cid as i64));
+                let availability = plan.is_some();
+                let status_text = if availability { String::new() } else { reason.to_string() };
+                let summary_text = plan.as_ref().map(|p| {
+                    let mut text = p.line.clone();
+                    if !p.diffs.is_empty() {
+                        text.push_str(&format!("\n差异: {}", p.diffs.join("; ")));
+                    }
+                    if let Some(first) = p.reasons.first() {
+                        text.push_str(&format!("\n理由: {first}"));
+                    }
+                    text
+                });
+                s.counter_plan = plan;
+                (availability, summary_text, status_text)
+            };
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = win_weak.upgrade() {
+                    win.set_counter_available(available);
+                    win.set_counter_summary(SharedString::from(summary.unwrap_or_default()));
+                    win.set_counter_status(SharedString::from(status));
+                    if available {
+                        win.set_apply_rune_status(SharedString::from(
+                            "对位已手动确认: 可点 [应用 Counter 符文]",
+                        ));
+                    }
+                }
+            });
+        });
+    });
+
     // -- Runes window: auto-apply toggle (persisted) --
     let state_auto = state.clone();
     runes_window.on_auto_apply_toggled(move |enabled| {
@@ -1311,6 +1391,7 @@ async fn lcu_monitor_task(
                     s.lol_dir.clear();
                     s.is_tencent = false;
                     s.current_champion_id = 0;
+                    s.manual_counter_target = None;
                     s.current_champion_alias.clear();
                     s.current_assigned_position.clear();
                     s.last_auto_applied_champion = 0;
@@ -1501,6 +1582,7 @@ async fn lcu_monitor_task(
                                         {
                                             let mut s = state.lock().unwrap();
                                             s.current_champion_id = 0;
+                                            s.manual_counter_target = None;
                                             s.current_champion_alias.clear();
                                             s.current_assigned_position.clear();
                                             s.last_auto_applied_champion = 0;
@@ -1532,11 +1614,13 @@ async fn lcu_monitor_task(
                                     s.current_assigned_position = assigned_position.clone();
                                 }
 
-                                // 选人排面(双方 1~5 楼/分路/已选英雄): 每次 session 更新都刷新
+                                // 选人排面(双方 1~5 楼/分路/已选英雄): 每次 session 更新都刷新;
+                                // 顺带刷新 Counter 卡的手动对位候选(敌方已选/悬停英雄)。
                                 {
-                                    let roster = {
+                                    let (roster, cand_ids, cand_names) = {
                                         let s = state.lock().unwrap();
-                                        render_roster_texts(session_data, &s)
+                                        let (ids, names) = counter_candidates(session_data, &s);
+                                        (render_roster_texts(session_data, &s), ids, names)
                                     };
                                     let rw = runes_weak.clone();
                                     let _ = slint::invoke_from_event_loop(move || {
@@ -1548,6 +1632,15 @@ async fn lcu_monitor_task(
                                                 win.set_roster_my(SharedString::from(""));
                                                 win.set_roster_enemy(SharedString::from(""));
                                             }
+                                            win.set_counter_cand_ids(ModelRc::new(VecModel::from(
+                                                cand_ids,
+                                            )));
+                                            win.set_counter_cand_names(ModelRc::new(VecModel::from(
+                                                cand_names
+                                                    .iter()
+                                                    .map(SharedString::from)
+                                                    .collect::<Vec<_>>(),
+                                            )));
                                         }
                                     });
                                 }
@@ -1574,7 +1667,11 @@ async fn lcu_monitor_task(
                                     if auto_rune && !auth.is_empty() {
                                         let (plan, _reason) = {
                                             let s = state.lock().unwrap();
-                                            compute_counter_plan(session_data, &s)
+                                            compute_counter_plan(
+                                                session_data,
+                                                &s,
+                                                s.manual_counter_target,
+                                            )
                                         };
                                         match plan {
                                             Some(plan) => {
@@ -1642,7 +1739,11 @@ async fn lcu_monitor_task(
                                 // and publish it to the runes window.
                                 let (plan_available, plan_summary, plan_newly_available, plan_status, intel_header, intel_body, war_header, war_body) = {
                                     let mut s = state.lock().unwrap();
-                                    let (plan, reason) = compute_counter_plan(session_data, &s);
+                                    let (plan, reason) = compute_counter_plan(
+                                        session_data,
+                                        &s,
+                                        s.manual_counter_target,
+                                    );
                                     let status = if plan.is_some() { "" } else { reason };
                                     let summary = plan.as_ref().map(|p| {
                                         let mut text = p.line.clone();
@@ -1705,6 +1806,7 @@ async fn lcu_monitor_task(
                                     {
                                         let mut s = state.lock().unwrap();
                                         s.current_champion_id = cid;
+                                        s.manual_counter_target = None;
                                         s.current_champion_alias = s
                                             .champions_map
                                             .values()
@@ -2790,6 +2892,7 @@ fn extract_locked_champion_id_from_session(session: Option<&Value>) -> i64 {
 fn compute_counter_plan(
     session_data: Option<&Value>,
     s: &AppState,
+    manual_target: Option<i64>,
 ) -> (Option<lcu::counter::RunePlan>, &'static str) {
     let Some(session) = session_data else {
         return (None, "选人会话未建立");
@@ -2807,13 +2910,20 @@ fn compute_counter_plan(
     if local.assigned_position.is_empty() {
         return (None, "本模式没有分路信息(排位选人期可用)");
     }
-    let Some(opponent) = snapshot.lane_opponent() else {
-        return (None, "对位英雄未识别(对面分路数据缺失)");
+    // 对位英雄: 手动点选优先(腾讯客户端敌方分路可能藏字段, 自动识别失效
+    // 时用户在 Counter 卡点"我打谁", 就成为对位目标)。
+    let opponent_id = if let Some(target) = manual_target {
+        target
+    } else {
+        let Some(opponent) = snapshot.lane_opponent() else {
+            return (None, "对位英雄未识别(下方点选你的对位即可)");
+        };
+        let id = opponent.effective_champion();
+        if id == 0 {
+            return (None, "等对面选出你的对位英雄");
+        }
+        id
     };
-    let opponent_id = opponent.effective_champion();
-    if opponent_id == 0 {
-        return (None, "等对面选出你的对位英雄");
-    }
     let Some(opponent_info) = s
         .champions_map
         .values()
@@ -2842,9 +2952,29 @@ fn compute_counter_plan(
     }
 }
 
+/// Counter 卡手动点选候选: 敌方阵容本局已选/悬停的英雄 (id, 中文名) 对。
+/// 与 roster 同源, 每次 session 变化都重算(悬停也算入, 给先做功课的空间)。
+fn counter_candidates(session_data: Option<&Value>, s: &AppState) -> (Vec<i32>, Vec<String>) {
+    let Some(session) = session_data else {
+        return (Vec::new(), Vec::new());
+    };
+    let Ok(snap) = lcu::match_context::ChampSelectSnapshot::from_session(session) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut ids: Vec<i32> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    for member in &snap.their_team {
+        let cid = member.effective_champion();
+        if cid > 0 && !ids.contains(&(cid as i32)) {
+            ids.push(cid as i32);
+            names.push(zh_champion_name(s, cid).unwrap_or_else(|| format!("#{cid}")));
+        }
+    }
+    (ids, names)
+}
+
 /// 冠军 id → 中文名(静态名表优先, 兜底 DDragon 英文名)。
-fn zh_champion_name(s: &AppState, champion_id: i64) -> Option<String> {
-    let key = champion_id.to_string();
+fn zh_champion_name(s: &AppState, champion_id: i64) -> Option<String> {    let key = champion_id.to_string();
     let champ = s.champions_map.values().find(|c| c.key == key)?;
     Some(
         s.static_names

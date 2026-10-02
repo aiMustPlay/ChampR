@@ -837,6 +837,9 @@ export component RunesWindow inherits Window {
     // 选人排面: 我方/敌方 1~5楼 + 分路 + 已选英雄(每次选人更新都刷)
     in-out property <string> roster-my: "";
     in-out property <string> roster-enemy: "";
+    // Counter 手动对位候选: 敌方已选/悬停英雄(id 与中文名平行数组)
+    in-out property <[int]> counter-cand-ids: [];
+    in-out property <[string]> counter-cand-names: [];
 
     // --- callbacks ---
     callback close-requested();
@@ -845,6 +848,8 @@ export component RunesWindow inherits Window {
     callback apply-counter-rune-clicked();
     callback auto-apply-toggled(bool);
     callback auto-builds-toggled(bool);
+    // 手动点选对位英雄 id(敌方已锁)
+    callback counter-pick-opponent(int);
 
     VerticalBox {
         padding: Tokens.s-lg;
@@ -1006,6 +1011,37 @@ export component RunesWindow inherits Window {
                     font-size: Tokens.f-aux;
                     color: Tokens.c-muted;
                     wrap: word-wrap;
+                }
+                // 手动对位兜底: 自动认不到对位时, 直接点"我这局打谁"
+                if !root.counter-available && root.counter-cand-names.length > 0 : VerticalLayout {
+                    spacing: Tokens.s-xs;
+                    Text {
+                        text: "对位没自动认到? 点你打的人:";
+                        font-size: Tokens.f-aux;
+                        color: Tokens.c-gold;
+                    }
+                    HorizontalLayout {
+                        spacing: Tokens.s-xs;
+                        alignment: start;
+                        for name[i] in root.counter-cand-names : Rectangle {
+                            height: 26px;
+                            width: chip-text.preferred-width + Tokens.s-md * 2;
+                            background: cand-touch.has-hover ? Tokens.c-gold : Tokens.c-dark-card;
+                            border-radius: Tokens.radius;
+                            border-color: Tokens.c-gold;
+                            border-width: Tokens.border-hair;
+                            cand-touch := TouchArea {
+                                clicked => { root.counter-pick-opponent(root.counter-cand-ids[i]); }
+                            }
+                            chip-text := Text {
+                                text: name;
+                                font-size: Tokens.f-aux;
+                                color: Tokens.c-dark-text;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
                 }
             }
         }
