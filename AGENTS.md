@@ -221,6 +221,8 @@ Rust TTS
 
 1. `.cache/`、`packages/opgg/.cache/` 不应提交。
 2. `app.slint` 中的中文曾经出现过编码问题，修改时尽量用 ASCII 或确保 UTF-8。
+   **`ChampR.bat` 必须纯 ASCII**: cmd.exe 按 GBK 解析 .bat, UTF-8 中文注释行会被拆成
+   垃圾命令("澶?90 不是内部命令"), 启动链路当场崩。批处理一行 CJK 都不许。
 3. Windows 路径 `C:\WeGameApps\...` 作为腾讯客户端默认路径。
 4. TTS 优先使用 Node.js `packages/audio` sidecar，依赖 `msedge-tts`；安装依赖：`corepack pnpm --dir packages/audio install`。
 5. LoL 启动器需要管理员权限时，会通过 `Start-Process -Verb RunAs` 处理。
