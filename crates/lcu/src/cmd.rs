@@ -311,11 +311,19 @@ fn spawn_lol_process(path: &std::path::Path) -> Result<std::path::PathBuf, Strin
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
-    match Command::new(path).spawn() {
+    // 2026-10-02 事故, 必须脱离: 默认 spawn 会继承 champR 的 conhost
+    // (bat 日志黑窗)。用户一旦关掉那个窗, 挂在它上面的进程树全部被杀,
+    // LeagueClient 跟着陪葬。DETACHED(不给控制台)+ BREAKAWAY_FROM_JOB
+    // (不被父 job 的 kill-on-close 带走)双保险。
+    const CREATE_DETACHED_PROCESS: u32 = 0x00000008;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
+    const DETACH_FLAGS: u32 = CREATE_DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB;
+
+    match Command::new(path).creation_flags(DETACH_FLAGS).spawn() {
         Ok(_) => Ok(path.to_path_buf()),
         Err(err) if err.raw_os_error() == Some(740) => {
             let script = format!(
-                "Start-Process -FilePath '{}' -Verb RunAs",
+                "Start-Process -FilePath '{}' -Verb RunAs -WindowStyle Hidden",
                 path.to_string_lossy().replace('\'', "''")
             );
             let output = Command::new("powershell.exe")
@@ -327,7 +335,7 @@ fn spawn_lol_process(path: &std::path::Path) -> Result<std::path::PathBuf, Strin
                     "-Command",
                     &script,
                 ])
-                .creation_flags(0x08000000)
+                .creation_flags(DETACH_FLAGS)
                 .output()
                 .map_err(|err| format!("Failed to elevate LoL launcher: {err}"))?;
 
