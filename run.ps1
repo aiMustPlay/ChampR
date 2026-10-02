@@ -145,10 +145,18 @@ function Start-Server {
         return
     }
 
-    # docker 命令存在 ≠ Docker Desktop 在跑: 先探活, daemon 没醒就退回 cargo
+    # docker CLI present != daemon up. PS5.1 traps: no-BOM file parses as ANSI so
+    # non-ASCII comments can break the parser; and with ErrorActionPreference=Stop,
+    # redirecting stderr of a native command (2>$null) throws NativeCommandError.
+    # Probe must stay ASCII-commented, try/catch wrapped, no stderr redirection.
     if (Test-Cmd 'docker') {
-        & docker version --format '{{.Server.Version}}' 2>$null | Out-Null
-        $dockerAlive = ($LASTEXITCODE -eq 0)
+        $dockerAlive = $false
+        try {
+            & docker version --format '{{.Server.Version}}' | Out-Null
+            $dockerAlive = ($LASTEXITCODE -eq 0)
+        } catch {
+            $dockerAlive = $false
+        }
         if ($dockerAlive) {
             Write-Step 'Starting the backend with Docker Compose'
             & docker compose up -d --build

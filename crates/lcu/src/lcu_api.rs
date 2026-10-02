@@ -74,10 +74,19 @@ pub async fn get_session(auth_url: &String) -> Result<Option<i64>, LcuError> {
 
 /// 排队就绪自动接受对局。幂等: LCU 对重复 accept 返回 204/错误均不可见影响,
 /// 调用方自己保证只在状态翻转瞬间调用一次。
+///
+/// auth_url 传进来是 `riot:token@127.0.0.1:port` 不带 scheme,
+/// 直接拼 reqwest 必炸 "builder error for url"(2026-10-01 自动接受撞针),
+/// 这里统一补齐 https。
 pub async fn accept_ready_check(auth_url: &str) -> Result<(), LcuError> {
+    let base = if auth_url.contains("://") {
+        auth_url.to_string()
+    } else {
+        format!("https://{auth_url}")
+    };
     let client = make_client();
     client
-        .post(format!("{auth_url}/lol-matchmaking/v1/ready-check/accept"))
+        .post(format!("{base}/lol-matchmaking/v1/ready-check/accept"))
         .version(reqwest::Version::HTTP_2)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
