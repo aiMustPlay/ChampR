@@ -1485,6 +1485,11 @@ async fn lcu_monitor_task(
 
                             // Champion select session changes
                             if uri == Some("/lol-champ-select/v1/session") {
+                                // 诊断留痕: 不受 DUMP 开关约束的常开落盘, 覆盖最新一局。
+                                // 用来回答"对面分路到底给不给"这种杀手锏问题。
+                                if let Some(session) = data.and_then(|v| v.get("data")) {
+                                    dump_champ_select_session(session).await;
+                                }
                                 let event_type = data
                                     .and_then(|v| v.get("eventType"))
                                     .and_then(|v| v.as_str());
@@ -1926,6 +1931,17 @@ fn remember_prompt(state: &SharedState, prompt: &str) {
     let mut s = state.lock().unwrap();
     s.coach_last_prompt = prompt.to_string();
     s.last_progress_key = prompt.to_string();
+}
+
+/// 选人会话常开留痕: 每次选人更新就覆盖 `.cache/champ-select-session.json`。
+/// (.cache 已 gitignore; 仅选人阶段落盘, 对局期间不写文件)
+async fn dump_champ_select_session(session: &Value) {
+    let Ok(pretty) = lcu::serde_json::to_string_pretty(session) else {
+        return;
+    };
+    let dir = std::path::Path::new(".cache");
+    let _ = tokio::fs::create_dir_all(dir).await;
+    let _ = tokio::fs::write(dir.join("champ-select-session.json"), pretty).await;
 }
 
 /// Write raw interface snapshots to `.cache/` for debugging
