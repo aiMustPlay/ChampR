@@ -1438,6 +1438,8 @@ async fn lcu_monitor_task(
                     tokio::time::sleep(Duration::from_millis(2500)).await;
                     continue;
                 }
+                info!("LCU WebSocket subscribed ({})", &current_auth_url);
+                last_ws_err = None;
 
                 while let Some(msg) = rx.next().await {
                     match msg {
