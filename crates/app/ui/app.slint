@@ -134,7 +134,6 @@ export component SourcesWindow inherits Window {
     in-out property <bool> launch-ok: false;
     in-out property <bool> llm-assistance-enabled: false;
     in-out property <int> reminder-tier: 0;
-    in-out property <string> lmstudio-status: "unknown";
     in-out property <string> match-session-status: "等待对局";
     in-out property <string> coach-chat-log: "";
     in-out property <string> coach-input: "";
@@ -406,22 +405,6 @@ export component SourcesWindow inherits Window {
                     alignment: center;
                     height: Tokens.row-height;
 
-                    Rectangle {
-                        width: Tokens.status-dot;
-                        height: Tokens.status-dot;
-                        border-radius: Tokens.status-dot / 2;
-                        background: root.lmstudio-status == "connected" ? Tokens.c-ok
-                            : root.lmstudio-status == "unreachable" ? Tokens.c-err
-                            : Tokens.c-muted;
-                    }
-                    Text {
-                        text: root.lmstudio-status == "connected" ? "LM Studio 在线"
-                            : root.lmstudio-status == "unreachable" ? "LM Studio 离线"
-                            : "LM Studio 检测中";
-                        font-size: Tokens.f-aux;
-                        vertical-alignment: center;
-                        color: Tokens.c-text-secondary;
-                    }
                     Text {
                         text: root.match-session-status;
                         font-size: Tokens.f-aux;

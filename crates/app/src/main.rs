@@ -1162,9 +1162,9 @@ fn main() {
     let state_c3 = state.clone();
     rt_handle.spawn(lcu_monitor_task(sources_weak3, runes_weak2, state_c3));
 
-    let lmstudio_weak = sources_window.as_weak();
-    let lmstudio_state = state.clone();
-    rt_handle.spawn(lmstudio_health_loop(lmstudio_weak, lmstudio_state));
+    // 用户拍板(2026-10-02): 主窗不再显示 "LM Studio 在线/离线" 灯——
+    // 一律走 API, 本地推理站健康状态与主界面状态无关。
+    // 对应的 health_loop/models_url/health_status 三个函数一并删除。
 
     let match_lifecycle_weak = sources_window.as_weak();
     let match_lifecycle_state = state.clone();
@@ -2376,57 +2376,6 @@ async fn greet_coach(weak: Weak<SourcesWindow>, state: SharedState) {
             let message = format!("System: Coach error: {err}");
             append_system_log(&weak, &state, &message);
         }
-    }
-}
-
-fn lmstudio_models_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    if trimmed.ends_with("/v1") {
-        format!("{trimmed}/models")
-    } else {
-        format!("{trimmed}/v1/models")
-    }
-}
-
-async fn lmstudio_health_status(base_url: &str) -> &'static str {
-    if base_url.trim().is_empty() {
-        return "unknown";
-    }
-
-    let url = lmstudio_models_url(base_url);
-    let client = match lcu::reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return "unreachable",
-    };
-
-    match client.get(&url).send().await {
-        Ok(response) if response.status().is_success() => "connected",
-        _ => "unreachable",
-    }
-}
-
-async fn lmstudio_health_loop(weak: Weak<SourcesWindow>, state: SharedState) {
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    loop {
-        interval.tick().await;
-        let base_url = {
-            let s = state.lock().unwrap();
-            s.lmstudio_config.base_url.clone()
-        };
-        let status = lmstudio_health_status(&base_url).await;
-
-        let weak = weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(win) = weak.upgrade() {
-                win.set_lmstudio_status(SharedString::from(status));
-            }
-        });
     }
 }
 
