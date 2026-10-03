@@ -125,7 +125,6 @@ export component SourcesWindow inherits Window {
     in-out property <string> status: "loading";
     in-out property <string> lcu-status: "disconnected";
     in-out property <string> lcu-summoner: "";
-    in-out property <bool> applying-builds: false;
     in-out property <bool> lol-running: false;
     in-out property <bool> llm-assistance-enabled: false;
     in-out property <int> reminder-tier: 0;
@@ -136,7 +135,6 @@ export component SourcesWindow inherits Window {
     in-out property <string> live-match-text: "";
     in-out property <bool> mini-live-enabled: true;
 
-    callback apply-builds-clicked();
     callback launch-lol-clicked();
     callback open-tts-settings-clicked();
     callback llm-assistance-changed(bool);
@@ -172,16 +170,6 @@ export component SourcesWindow inherits Window {
                     horizontal-stretch: 1;
                     clicked => {
                         root.launch-lol-clicked();
-                    }
-                }
-
-                Button {
-                    text: "🛠 应用出装";
-                    height: Tokens.btn-height;
-                    horizontal-stretch: 1;
-                    enabled: !root.applying-builds && root.lcu-status == "connected";
-                    clicked => {
-                        root.apply-builds-clicked();
                     }
                 }
 

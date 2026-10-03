@@ -368,113 +368,12 @@ fn main() {
         tts_settings_window.set_pinned_monitor(current);
     }
 
-    // -- Apply Builds button --
-    let state_c = state.clone();
-    let sources_weak = sources_window.as_weak();
+    // -- Apply Builds button removed (2026-10-02, 用户拍板) --
+    // 出装写入是往客户端 Config\Champions\<英雄>\Recommended 写 item set JSON,
+    // 只有进游戏开商店才看得见结果, 本机从未成功产出过文件(目录都不存在),
+    // 属于"看不见又没反馈"的僵尸功能。锁后自动出装开关保留(默认关)。
     let rt_handle = tokio::runtime::Runtime::new().unwrap();
-    // We need the runtime handle to spawn from callbacks
     let rt_handle_ref = rt_handle.handle().clone();
-
-    sources_window.on_apply_builds_clicked({
-        let state_c = state_c.clone();
-        let weak = sources_weak.clone();
-        let handle = rt_handle_ref.clone();
-        move || {
-            let (champion_alias, current_champion_id, dir, is_tencent, auth_url) = {
-                let s = state_c.lock().unwrap();
-                (
-                    s.current_champion_alias.clone(),
-                    s.current_champion_id,
-                    s.lol_dir.clone(),
-                    s.is_tencent,
-                    s.auth_url.clone(),
-                )
-            };
-            info!(
-                "apply builds clicked: alias={:?}, id={}, dir={:?}, tencent={}, auth={}",
-                champion_alias,
-                current_champion_id,
-                dir,
-                is_tencent,
-                !auth_url.is_empty()
-            );
-
-            if dir.is_empty() {
-                warn!("apply builds: League Client directory not found");
-                return;
-            }
-
-            let source = DEFAULT_SOURCE_VALUE.to_string();
-
-            // Set applying state
-            info!("apply builds: start (champion_id={current_champion_id}, alias={champion_alias})");
-            let w = weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(win) = w.upgrade() {
-                    win.set_applying_builds(true);
-                }
-            });
-
-            let weak2 = weak.clone();
-            handle.spawn(async move {
-                let mut champion_id = current_champion_id;
-                if champion_id == 0 && !auth_url.is_empty() {
-                    let endpoint = format!("https://{auth_url}");
-                    let session = lcu_api::get_session(&endpoint).await;
-                    info!("apply builds LCU session: {:?}", session);
-                    if let Ok(Some(cid)) = session {
-                        champion_id = cid;
-                    }
-                }
-
-                if champion_id == 0 && champion_alias.is_empty() {
-                    warn!("apply builds: no champion selected in client");
-                    let w = weak2.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(win) = w.upgrade() {
-                            win.set_applying_builds(false);
-                        }
-                    });
-                    return;
-                }
-
-                let result = if champion_id > 0 {
-                    lcu::builds::apply_builds_from_id(
-                        &dir,
-                        &source,
-                        champion_id,
-                        is_tencent,
-                    )
-                    .await
-                } else {
-                    lcu::builds::apply_builds_from_source(
-                        &dir,
-                        &source,
-                        &champion_alias,
-                        is_tencent,
-                    )
-                    .await
-                };
-
-                let champion_label = if champion_id > 0 {
-                    champion_id.to_string()
-                } else {
-                    champion_alias.clone()
-                };
-                info!(
-                    "apply builds result for {}: {:?}",
-                    champion_label,
-                    result.as_ref().err()
-                );
-
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(win) = weak2.upgrade() {
-                        win.set_applying_builds(false);
-                    }
-                });
-            });
-        }
-    });
 
     // -- Launch LoL client --
     let launch_state = state.clone();
@@ -1611,7 +1510,6 @@ async fn lcu_monitor_task(
                                     if auto_builds && !lol_dir.is_empty() && !already_applied {
                                         info!("auto-writing item builds for locked champion {locked_cid}");
                                         tokio::spawn(auto_write_builds(
-                                            sources_weak.clone(),
                                             lol_dir,
                                             is_tencent,
                                             locked_cid,
@@ -2975,38 +2873,16 @@ async fn apply_best_rune_for_position(
 //  Auto write recommended item builds on champion lock-in
 // ---------------------------------------------------------------------------
 
-async fn auto_write_builds(
-    sources_weak: Weak<SourcesWindow>,
-    lol_dir: String,
-    is_tencent: bool,
-    champion_id: i64,
-) {
-    let set_status = |applying: bool, ok: bool, text: String| {
-        let weak = sources_weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(win) = weak.upgrade() {
-                win.set_applying_builds(applying);
-            }
-        });
-        if ok {
-            info!("{text}");
-        } else {
-            warn!("{text}");
-        }
-    };
-
-    set_status(true, false, format!("自动写入推荐出装(英雄 {champion_id})…"));
+async fn auto_write_builds(lol_dir: String, is_tencent: bool, champion_id: i64) {
+    info!("自动写入推荐出装(英雄 {champion_id})…");
 
     let source = DEFAULT_SOURCE_VALUE.to_string();
     let result = lcu::builds::apply_builds_from_id(&lol_dir, &source, champion_id, is_tencent).await;
-    let ok = result.is_ok();
-    let msg = if ok {
-        format!("已自动写入推荐出装(英雄 {champion_id})")
+    if result.is_ok() {
+        info!("已自动写入推荐出装(英雄 {champion_id})");
     } else {
-        format!("自动写入出装失败(英雄 {champion_id})")
-    };
-    info!("auto write builds: {msg}");
-    set_status(false, ok, msg);
+        warn!("自动写入出装失败(英雄 {champion_id})");
+    }
 }
 
 // ---------------------------------------------------------------------------
