@@ -1,16 +1,13 @@
-import { VerticalBox, HorizontalBox, ListView, ScrollView, Button, SpinBox, LineEdit, TextEdit, CheckBox, ComboBox, Palette } from "std-widgets.slint";
+// 用 HorizontalLayout/VerticalLayout 而不是 HorizontalLayout/VerticalLayout:
+// 后者 = 布局 + StyleMetrics.layout-padding(8px), 会给每行偷偷加 8px 内边距,
+// 造成行与行对不齐(2026-10-03 用户指出的 Tab 行比文本框右移 8px)。内边距一律显式写。
+import { ListView, ScrollView, SpinBox, LineEdit, TextEdit, ComboBox, Palette } from "std-widgets.slint";
 
 // 把风格内置的 Palette 再导出, 让 Rust 端能拿到句柄:
 //   Palette.color-scheme 是 in-out 且双向绑到 FluentPalette.color-scheme,
-//   启动时 set_color_scheme(Dark) 就能把 TextEdit/LineEdit/CheckBox/ComboBox
+//   启动时 set_color_scheme(Dark) 就能把 TextEdit/LineEdit/ComboBox
 //   这些不吃 Tokens 的控件一起翻到深色(它们跟随 OS 主题, 只能这样强制)。
 export { Palette } from "std-widgets.slint";
-
-// ---------------------------------------------------------------------------
-//  深色主题: 每个 Window 内声明一份 Palette 覆写, 让 std-widgets 的
-//  TextEdit/LineEdit/CheckBox/ComboBox 也走深底浅字(它们不读 Tokens)。
-//  改主题色时这里和 Tokens 一起改, 四处保持一致。
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 //  Design tokens —— 全局统一尺寸/颜色, 对齐 analysis_and_design/ui-design-system.md
@@ -139,7 +136,7 @@ component GoldButton inherits Rectangle {
     }
 }
 
-component GoldCheck inherits HorizontalBox {
+component GoldCheck inherits HorizontalLayout {
     in property <string> text: "";
     in-out property <bool> checked: false;
     callback toggled(bool);
@@ -151,7 +148,7 @@ component GoldCheck inherits HorizontalBox {
         horizontal-stretch: 0;
         background: transparent;
 
-        inner := HorizontalBox {
+        inner := HorizontalLayout {
             spacing: Tokens.s-xs;
             alignment: center;
 
@@ -241,7 +238,7 @@ export component SourcesWindow inherits Window {
     // 正在输入时续期静默(不许对局快照把输入框抢走)
     callback output-tab-hold();
 
-    VerticalBox {
+    VerticalLayout {
         padding: Tokens.s-lg;
         spacing: Tokens.s-md;
 
@@ -264,14 +261,15 @@ export component SourcesWindow inherits Window {
             border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
 
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-md;
                 spacing: Tokens.s-sm;
 
-                HorizontalBox {
+                HorizontalLayout {
                     spacing: Tokens.s-xs;
-                    alignment: center;
-                    // 按钮比状态行高: 32px 装不下 Fluent 按钮+emoji, 文字会被裁
+                    // 不写 alignment: center —— 那会让整行内容居中, Tab 左边缘
+                    // 与下面的说明文字/输出框对不齐(2026-10-03 用户指出的问题)。
+                    // 默认 start: Tab 靠左贴齐, 右侧用 stretch 空位把尾部控件推到最右。
                     height: Tokens.btn-height;
 
                     GoldButton {
@@ -376,7 +374,7 @@ export component SourcesWindow inherits Window {
 
         // 底部一行: 左边构建戳(排查"改了没生效"), 右边设置入口。
         // 用户 2026-10-03 拍板: 只为装一个按钮的"快捷操作"卡片整张删掉。
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             spacing: Tokens.s-sm;
 
@@ -449,7 +447,7 @@ export component TtsSettingsWindow inherits Window {
     callback open-speech-settings-clicked();
     callback open-deepseek-web-login-clicked();
 
-    VerticalBox {
+    VerticalLayout {
         padding: Tokens.s-lg;
         spacing: Tokens.s-md;
 
@@ -463,7 +461,7 @@ export component TtsSettingsWindow inherits Window {
         // 内容超出一屏时滚动; 底部 应用/取消 永远钉在视口内。
         ScrollView {
             vertical-stretch: 1;
-            VerticalBox {
+            VerticalLayout {
                 spacing: Tokens.s-md;
                 padding-right: Tokens.s-sm;
         Rectangle {
@@ -472,23 +470,23 @@ export component TtsSettingsWindow inherits Window {
             border-width: Tokens.border-hair;
             border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-md;
                 spacing: Tokens.s-sm;
                 Text { text: "TTS"; font-size: Tokens.f-section; font-weight: 600; }
-                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "语速"; width: Tokens.w-form-label; vertical-alignment: center; }
                     SpinBox { minimum: -10; maximum: 10; value: root.tts-rate; horizontal-stretch: 1; edited(value) => { root.tts-rate = value; } }
                 }
-                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "音量"; width: Tokens.w-form-label; vertical-alignment: center; }
                     SpinBox { minimum: 0; maximum: 100; value: root.tts-volume; horizontal-stretch: 1; edited(value) => { root.tts-volume = value; } }
                 }
-                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "音色"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.tts-voice; horizontal-stretch: 1; edited(text) => { root.tts-voice = text; } }
                 }
-                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     LineEdit { text: root.tts-test-text; placeholder-text: "输入测试文字"; horizontal-stretch: 1; edited(text) => { root.tts-test-text = text; } }
                     GoldButton { text: "🔊 试听"; clicked => { root.test-tts-clicked(); } }
                 }
@@ -513,7 +511,7 @@ export component TtsSettingsWindow inherits Window {
             border-width: Tokens.border-hair;
             border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-md;
                 spacing: Tokens.s-sm;
                 Text { text: "对局"; font-size: Tokens.f-section; font-weight: 600; }
@@ -537,11 +535,11 @@ export component TtsSettingsWindow inherits Window {
             border-width: Tokens.border-hair;
             border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-md;
                 spacing: Tokens.s-sm;
                 Text { text: "显示器定位"; font-size: Tokens.f-section; font-weight: 600; }
-                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "固定到屏幕"; width: Tokens.w-form-label; vertical-alignment: center; }
                     ComboBox {
                         horizontal-stretch: 1;
@@ -567,11 +565,11 @@ export component TtsSettingsWindow inherits Window {
             border-width: Tokens.border-hair;
             border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-md;
                 spacing: Tokens.s-sm;
                 Text { text: "LoL"; font-size: Tokens.f-section; font-weight: 600; }
-                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "启动器路径"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.lol-launcher-path; horizontal-stretch: 1; edited(text) => { root.lol-launcher-path = text; } }
                 }
@@ -584,11 +582,11 @@ export component TtsSettingsWindow inherits Window {
             border-width: Tokens.border-hair;
             border-color: Tokens.c-card-border;
             horizontal-stretch: 1;
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-md;
                 spacing: Tokens.s-sm;
                 Text { text: "DeepSeek"; font-size: Tokens.f-section; font-weight: 600; }
-                HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "提供商"; width: Tokens.w-form-label; vertical-alignment: center; }
                     ComboBox {
                         model: ["deepseek", "deepseek_web", "lmstudio", "openai"];
@@ -598,9 +596,9 @@ export component TtsSettingsWindow inherits Window {
                         }
                     }
                 }
-                if root.ai-provider != "deepseek_web" : VerticalBox {
+                if root.ai-provider != "deepseek_web" : VerticalLayout {
                     spacing: Tokens.s-sm;
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "LLM 通道"; width: Tokens.w-form-label; vertical-alignment: center; }
                         ComboBox {
                             model: ["maohou", "direct"];
@@ -614,7 +612,7 @@ export component TtsSettingsWindow inherits Window {
                         font-size: Tokens.f-aux;
                         wrap: word-wrap;
                     }
-                    if root.ai-backend == "maohou" : HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    if root.ai-backend == "maohou" : HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "引擎路径"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { placeholder-text: "留空 = 自动(MAOHOU_BIN → 兄弟仓 → PATH)"; text: root.maohou-bin; horizontal-stretch: 1; edited(text) => { root.maohou-bin = text; } }
                     }
@@ -625,7 +623,7 @@ export component TtsSettingsWindow inherits Window {
                         wrap: word-wrap;
                     }
                 }
-                if root.ai-provider == "deepseek_web" : VerticalBox {
+                if root.ai-provider == "deepseek_web" : VerticalLayout {
                     spacing: Tokens.s-sm;
                     Text {
                         text: "实验功能: 网页改版或风控可能导致中断。";
@@ -644,49 +642,49 @@ export component TtsSettingsWindow inherits Window {
                     }
                     Text { text: root.deepseek-web-status; color: Tokens.c-text-secondary; wrap: word-wrap; }
                 }
-                if root.ai-provider == "deepseek" : VerticalBox {
+                if root.ai-provider == "deepseek" : VerticalLayout {
                     spacing: Tokens.s-sm;
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "API Key"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-api-key; horizontal-stretch: 1; edited(text) => { root.deepseek-api-key = text; } }
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "Base URL"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-base-url; horizontal-stretch: 1; edited(text) => { root.deepseek-base-url = text; } }
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "模型"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-model; horizontal-stretch: 1; edited(text) => { root.deepseek-model = text; } }
                     }
-                    HorizontalBox { height: Tokens.row-height; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-height; spacing: Tokens.s-md;
                     Text { text: "思维链"; width: Tokens.w-form-label; vertical-alignment: center; }
                     GoldCheck { checked: root.deepseek-thinking; toggled => { root.deepseek-thinking = !root.deepseek-thinking; } }
                     }
-                    HorizontalBox { height: Tokens.row-height; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-height; spacing: Tokens.s-md;
                     Text { text: "流式输出"; width: Tokens.w-form-label; vertical-alignment: center; }
                     GoldCheck { checked: root.deepseek-stream; toggled => { root.deepseek-stream = !root.deepseek-stream; } }
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                     Text { text: "推理强度"; width: Tokens.w-form-label; vertical-alignment: center; }
                     LineEdit { text: root.deepseek-reasoning-effort; horizontal-stretch: 1; edited(text) => { root.deepseek-reasoning-effort = text; } }
                     }
                 }
-                if root.ai-provider == "lmstudio" : VerticalBox {
+                if root.ai-provider == "lmstudio" : VerticalLayout {
                     spacing: Tokens.s-sm;
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "Base URL"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.lmstudio-base-url; horizontal-stretch: 1; edited(text) => { root.lmstudio-base-url = text; } }
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "模型"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.lmstudio-model; horizontal-stretch: 1; edited(text) => { root.lmstudio-model = text; } }
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "API Key"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.lmstudio-api-key; horizontal-stretch: 1; edited(text) => { root.lmstudio-api-key = text; } }
                     }
                 }
-                if root.ai-provider == "openai" : VerticalBox {
+                if root.ai-provider == "openai" : VerticalLayout {
                     spacing: Tokens.s-sm;
                     Text {
                         text: "任意 OpenAI 兼容端点(第三方网关/本地推理站; Claude 不需要走这里)。API Key 可留空。";
@@ -694,15 +692,15 @@ export component TtsSettingsWindow inherits Window {
                         font-size: Tokens.f-aux;
                         wrap: word-wrap;
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "Base URL"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { placeholder-text: "https://你的网关/v1"; text: root.openai-base-url; horizontal-stretch: 1; edited(text) => { root.openai-base-url = text; } }
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "模型"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.openai-model; horizontal-stretch: 1; edited(text) => { root.openai-model = text; } }
                     }
-                    HorizontalBox { height: Tokens.row-field; spacing: Tokens.s-md;
+                    HorizontalLayout { height: Tokens.row-field; spacing: Tokens.s-md;
                         Text { text: "API Key"; width: Tokens.w-form-label; vertical-alignment: center; }
                         LineEdit { text: root.openai-api-key; horizontal-stretch: 1; edited(text) => { root.openai-api-key = text; } }
                     }
@@ -712,7 +710,7 @@ export component TtsSettingsWindow inherits Window {
             }
         }
 
-        HorizontalBox {
+        HorizontalLayout {
             alignment: end;
             spacing: Tokens.s-md;
             GoldButton { text: "取消"; clicked => { root.cancel-clicked(); } }
@@ -775,7 +773,7 @@ export component RunesWindow inherits Window {
     ScrollView {
         viewport-width: self.width;
 
-        VerticalBox {
+        VerticalLayout {
             padding: Tokens.s-lg;
             spacing: Tokens.s-md;
 
@@ -786,7 +784,7 @@ export component RunesWindow inherits Window {
             border-width: Tokens.border-hair;
             border-color: Tokens.c-gold;
             horizontal-stretch: 1;
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-sm;
                 spacing: 4px;
                 Text {
@@ -805,7 +803,7 @@ export component RunesWindow inherits Window {
         }
 
         // Champion header
-        if root.has-champion : HorizontalBox {
+        if root.has-champion : HorizontalLayout {
             spacing: Tokens.s-md;
             alignment: center;
 
@@ -815,7 +813,7 @@ export component RunesWindow inherits Window {
                 height: Tokens.avatar;
             }
 
-            VerticalBox {
+            VerticalLayout {
                 alignment: center;
                 Text {
                     text: root.champion-name != "" ? root.champion-name : "Champion " + root.champion-id;
@@ -827,9 +825,10 @@ export component RunesWindow inherits Window {
             }
         }
 
-        if root.has-champion : HorizontalBox {
+        if root.has-champion : HorizontalLayout {
             spacing: Tokens.s-sm;
-            alignment: center;
+            // 靠左对齐, 与上方英雄名/下方按钮同一条左边线
+            alignment: start;
 
             Text {
                 text: "本局分路: " + (root.position-label != "" ? root.position-label : "未知") + " · 数据源 OP.GG";
@@ -841,7 +840,7 @@ export component RunesWindow inherits Window {
 
         // Matchup-targeted rune actions: counter plan is the primary action
         // whenever the local rule engine has one; mainstream-only otherwise.
-        if root.has-champion : HorizontalBox {
+        if root.has-champion : HorizontalLayout {
             spacing: Tokens.s-sm;
 
             GoldButton {
@@ -863,7 +862,7 @@ export component RunesWindow inherits Window {
             }
         }
 
-        if root.has-champion : HorizontalBox {
+        if root.has-champion : HorizontalLayout {
             spacing: Tokens.s-lg;
             alignment: center;
 
@@ -893,7 +892,7 @@ export component RunesWindow inherits Window {
             border-radius: Tokens.radius;
             horizontal-stretch: 1;
 
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-sm;
                 spacing: Tokens.s-xs;
 
@@ -960,7 +959,7 @@ export component RunesWindow inherits Window {
             border-radius: Tokens.radius;
             horizontal-stretch: 1;
 
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-sm;
                 spacing: Tokens.s-xs;
 
@@ -987,7 +986,7 @@ export component RunesWindow inherits Window {
             border-radius: Tokens.radius;
             horizontal-stretch: 1;
 
-            VerticalBox {
+            VerticalLayout {
                 padding: Tokens.s-sm;
                 spacing: Tokens.s-xs;
 
@@ -1037,12 +1036,12 @@ export component RunesWindow inherits Window {
                 background: Tokens.c-card;
                 height: Tokens.row-rune-item;
 
-                HorizontalBox {
+                HorizontalLayout {
                     padding: Tokens.s-sm;
                     spacing: Tokens.s-sm;
                     alignment: stretch;
 
-                    VerticalBox {
+                    VerticalLayout {
                         alignment: center;
                         spacing: Tokens.s-xs;
 
@@ -1054,7 +1053,7 @@ export component RunesWindow inherits Window {
                             overflow: elide;
                         }
 
-                        HorizontalBox {
+                        HorizontalLayout {
                             spacing: Tokens.s-md;
                             Text {
                                 text: "选用: " + rune.pick-count;
@@ -1075,7 +1074,7 @@ export component RunesWindow inherits Window {
                         }
                     }
 
-                    VerticalBox {
+                    VerticalLayout {
                         alignment: center;
                         GoldButton {
                             text: "应用";
@@ -1097,7 +1096,7 @@ export component RunesWindow inherits Window {
         }
 
         // Close
-        HorizontalBox {
+        HorizontalLayout {
             alignment: center;
             GoldButton {
                 text: "关闭";
@@ -1127,11 +1126,11 @@ export component MiniMatchWindow inherits Window {
     in-out property <string> match-text: "";
     in-out property <string> match-status: "对局中";
 
-    VerticalBox {
+    VerticalLayout {
         padding: Tokens.s-md;
         spacing: Tokens.s-sm;
 
-        HorizontalBox {
+        HorizontalLayout {
             spacing: Tokens.s-sm;
             alignment: center;
             height: Tokens.row-height;
