@@ -85,9 +85,10 @@ export global Tokens {
 
     // 窗口尺寸 preferred (min 用于限制缩放)
     out property <length> win-main-w: 520px;
-    out property <length> win-main-h: 1120px;
+    // 主窗内容 = 快捷操作 + 输出区(固定高度), 窗口按内容裁剪, 不留虚高空白
+    out property <length> win-main-h: 700px;
     out property <length> win-main-min-w: 440px;
-    out property <length> win-main-min-h: 860px;
+    out property <length> win-main-min-h: 560px;
     out property <length> win-runes-w: 620px;
     out property <length> win-runes-h: 1020px;
     out property <length> win-runes-min-w: 520px;
@@ -194,6 +195,8 @@ export component SourcesWindow inherits Window {
 
         // 单一输出区(用户 2026-10-02 拍板): 对局快照与大师对话共用一个框,
         // 谁刚输出谁上前台; 手动点过 Tab 后 45 秒内不被自动抢台。
+        // 全部固定高度, 不使用 stretch(固定 height + stretch 混用会互相打架,
+        // 2026-10-03 卡片里空一大块的根因); 窗口高度按内容裁剪, 见 win-main-h。
         Rectangle {
             background: Tokens.c-card;
             border-radius: Tokens.radius;
@@ -208,19 +211,24 @@ export component SourcesWindow inherits Window {
                 HorizontalBox {
                     spacing: Tokens.s-xs;
                     alignment: center;
-                    height: Tokens.row-height;
+                    // 按钮比状态行高: 32px 装不下 Fluent 按钮+emoji, 文字会被裁
+                    height: Tokens.btn-height;
 
                     Button {
-                        text: "📊 对局数据";
+                        text: "对局数据";
                         primary: root.output-tab == 0;
+                        height: Tokens.btn-height;
+                        min-width: 104px;
                         clicked => {
                             root.output-tab = 0;
                             root.output-tab-clicked(0);
                         }
                     }
                     Button {
-                        text: "🧠 大师对话";
+                        text: "大师对话";
                         primary: root.output-tab == 1;
+                        height: Tokens.btn-height;
+                        min-width: 104px;
                         clicked => {
                             root.output-tab = 1;
                             root.output-tab-clicked(1);
@@ -278,7 +286,7 @@ export component SourcesWindow inherits Window {
                         ? (root.live-match-text != "" ? root.live-match-text : "等待对局数据(进入英雄选择或对局后自动刷新)")
                         : (root.coach-chat-log != "" ? root.coach-chat-log : "还没有对话。向大师提问试试。");
                     read-only: true;
-                    height: Tokens.panel-log-h;
+                    min-height: 220px;
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
                     font-size: Tokens.f-aux;

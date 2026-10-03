@@ -7,7 +7,7 @@ build = "build.rs"
 [dependencies]
 lcu = { path = "../lcu" }
 tokio = { version = "1.44.0", features = ["full"] }
-slint = "1.15"
+slint = { version = "1.15", features = ["renderer-software"] }
 kv-log-macro = "1.0.7"
 femme = "2.2.1"
 anyhow = "1.0.86"
