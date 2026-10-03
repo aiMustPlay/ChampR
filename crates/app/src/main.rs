@@ -2351,6 +2351,8 @@ async fn match_lifecycle_task(
     // (user may close it for the rest of the game), hidden the moment the
     // game leaves InProgress.
     let mut mini_shown_this_game = false;
+    // 本局"不弹/等窗口"的原因只写一次日志, 避免每 2s 刷屏
+    let mut mini_skip_logged = false;
 
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -2421,7 +2423,6 @@ async fn match_lifecycle_task(
             s.mini_live_enabled
         };
         if current_phase == MatchPhase::InProgress && !mini_shown_this_game {
-            mini_shown_this_game = true;
             if mini_enabled {
                 // 铁律: 游戏必须完整独占它自己的屏。迷你窗只落在"非游戏屏";
                 // 单屏 / TF识别不到游戏窗口 → 本局不弹(信息走 TTS 与主窗)。
@@ -2431,30 +2432,38 @@ async fn match_lifecycle_task(
                 };
                 let found = game_screen::game_screen_and_hwnd(&mons);
                 let target = monitors::mini_target(&mons, found.map(|(idx, _)| idx));
-                match (target, found) {
-                    (Some(mi), Some((_, game_hwnd))) => {
-                        let monitor = mons.iter().find(|m| m.index == mi).cloned();
-                        let mini = mini_weak.clone();
-                        let status = label.to_string();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let (Some(win), Some(m)) = (mini.upgrade(), monitor) {
-                                win.set_match_status(SharedString::from(status));
-                                win.show().unwrap();
-                                pin_window_on_monitor(win.window(), &m, PinAnchor::TopRight);
-                                // show() 夺焦会让独占全屏游戏最小化 —— 把焦点还回去
-                                game_screen::restore_focus(game_hwnd);
-                            }
-                        });
+                if mons.len() < 2 {
+                    // 单屏: 永远弹不了, 本局就此定案
+                    mini_shown_this_game = true;
+                    if !mini_skip_logged {
+                        mini_skip_logged = true;
+                        kv_log_macro::info!("迷你窗本局不弹: 仅单屏, 游戏必须完整占屏");
                     }
-                    _ => {
-                        kv_log_macro::info!(
-                            "迷你窗本局不弹: {}",
-                            if mons.len() < 2 {
-                                "仅单屏, 游戏必须完整占屏".to_string()
-                            } else {
-                                "未识别到游戏窗口(gamescreen unknown)".to_string()
+                } else {
+                    match (target, found) {
+                        (Some(mi), Some((_, game_hwnd))) => {
+                            mini_shown_this_game = true;
+                            let monitor = mons.iter().find(|m| m.index == mi).cloned();
+                            let mini = mini_weak.clone();
+                            let status = label.to_string();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let (Some(win), Some(m)) = (mini.upgrade(), monitor) {
+                                    win.set_match_status(SharedString::from(status));
+                                    win.show().unwrap();
+                                    pin_window_on_monitor(win.window(), &m, PinAnchor::TopRight);
+                                    // show() 夺焦会让独占全屏游戏最小化 —— 把焦点还回去
+                                    game_screen::restore_focus(game_hwnd);
+                                }
+                            });
+                        }
+                        _ => {
+                            // 进对局瞬间游戏进程可能还没建窗(phase 先切, 窗口后到)。
+                            // 这里**不置位**, 下轮(2s 后)继续试 —— 否则一局都不会再弹。
+                            if !mini_skip_logged {
+                                mini_skip_logged = true;
+                                kv_log_macro::info!("迷你窗等游戏窗口出现(每 2s 重试, 识别到就弹)");
                             }
-                        );
+                        }
                     }
                 }
             }
@@ -2468,6 +2477,7 @@ async fn match_lifecycle_task(
                 });
             }
             mini_shown_this_game = false;
+            mini_skip_logged = false; // 下一局重新给一次日志
         }
     }
 }
