@@ -3019,6 +3019,25 @@ enum PinAnchor {
     Center,
 }
 
+/// 窗口比目标显示器工作区还大时, 按比例缩回来(保留宽高比)。
+/// 起因: 主窗按黄金比放大到 840×1360 后, 用户改缩放比例或换小屏就会
+/// 被切掉标题栏/底栏 —— 这里兜底, 并把结果写日志(不静默)。
+fn clamp_window_to_work_area(window: &slint::Window, m: &monitors::Monitor) {
+    let (l, t, r, b) = m.work_rect;
+    let avail_w = (r - l - 24).max(320);
+    let avail_h = (b - t - 24).max(240);
+    let size = window.size(); // 物理像素
+    let (w, h) = (size.width as i32, size.height as i32);
+    if w <= avail_w && h <= avail_h {
+        return;
+    }
+    let scale = f64::min(avail_w as f64 / w as f64, avail_h as f64 / h as f64);
+    let nw = ((w as f64 * scale) as u32).max(320);
+    let nh = ((h as f64 * scale) as u32).max(240);
+    warn!("window {w}x{h} exceeds work area {avail_w}x{avail_h}; clamped to {nw}x{nh}");
+    window.set_size(slint::PhysicalSize::new(nw, nh));
+}
+
 /// 将窗口放进 pinned_monitor 指定显示器的工作区。
 /// 在 `show()` 之后调用才能拿到尺寸做精确锚定; 未配置/无该显示器时 no-op。
 fn pin_window_to_monitor(window: &slint::Window, state: &SharedState, anchor: PinAnchor) {
@@ -3035,6 +3054,7 @@ fn pin_window_to_monitor(window: &slint::Window, state: &SharedState, anchor: Pi
         // 索引越界 = 之前配置的显示器现在不在, 静默回退不固定
         return;
     };
+    clamp_window_to_work_area(window, m);
     let (l, t, r, _b) = m.work_rect;
     let size = window.size(); // 物理像素; show() 后才有意义
     let (x, y) = match anchor {
@@ -3050,6 +3070,7 @@ fn pin_window_to_monitor(window: &slint::Window, state: &SharedState, anchor: Pi
 /// 将窗口放进**指定**显示器的工作区(不读 settings, 调用方已经决定了屏)。
 /// 迷你窗用这条: 目标屏由 game_screen 规则求出, 与用户 pinned_monitor 无关。
 fn pin_window_on_monitor(window: &slint::Window, m: &monitors::Monitor, anchor: PinAnchor) {
+    clamp_window_to_work_area(window, m);
     let (l, t, r, b) = m.work_rect;
     let size = window.size();
     let (x, y) = match anchor {

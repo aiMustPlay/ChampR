@@ -80,20 +80,20 @@ export global Tokens {
     out property <length> panel-match-h: 210px;
     out property <length> panel-log-h: 340px;
 
-    // 窗口尺寸 preferred (min 用于限制缩放)
-    out property <length> win-main-w: 520px;
-    // 主窗内容 = 快捷操作 + 输出区(固定高度), 窗口按内容裁剪, 不留虚高空白
-    out property <length> win-main-h: 700px;
-    out property <length> win-main-min-w: 440px;
-    out property <length> win-main-min-h: 560px;
-    out property <length> win-runes-w: 620px;
-    out property <length> win-runes-h: 1020px;
-    out property <length> win-runes-min-w: 520px;
-    out property <length> win-runes-min-h: 640px;
-    out property <length> win-settings-w: 480px;
-    out property <length> win-settings-h: 830px;
-    out property <length> win-settings-min-w: 420px;
-    out property <length> win-settings-min-h: 600px;
+    // 窗口尺寸: 统一黄金比 1.618 (用户 2026-10-03 拍板"按黄金比例、比现在大 2 倍")
+    // 主窗 840×1360 是 150% 缩放下 1440 逻辑高里能完整放下的竖版黄金比上限。
+    out property <length> win-main-w: 840px;
+    out property <length> win-main-h: 1360px;
+    out property <length> win-main-min-w: 620px;
+    out property <length> win-main-min-h: 1003px;
+    out property <length> win-runes-w: 720px;
+    out property <length> win-runes-h: 1165px;
+    out property <length> win-runes-min-w: 560px;
+    out property <length> win-runes-min-h: 906px;
+    out property <length> win-settings-w: 560px;
+    out property <length> win-settings-h: 906px;
+    out property <length> win-settings-min-w: 480px;
+    out property <length> win-settings-min-h: 777px;
     out property <length> win-mini-w: 340px;
     out property <length> win-mini-h: 240px;
 }

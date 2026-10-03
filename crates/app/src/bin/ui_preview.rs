@@ -35,23 +35,27 @@ impl Platform for PreviewPlatform {
 fn main() {
     let which = std::env::args().nth(1).unwrap_or_else(|| "main".to_string());
 
-    // 1x 缩放渲染, 尺寸取窗口的 preferred size(逻辑像素)
-    let (w, h) = match which.as_str() {
-        "runes" => (620u32, 1020u32),
-        "mini" => (340, 240),
-        "settings" => (480, 830),
-        _ => (520, 700),
-    };
-
     let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
-    window.set_size(PhysicalSize::new(w, h));
     slint::platform::set_platform(Box::new(PreviewPlatform {
         window: window.clone(),
     }))
     .expect("set preview platform");
 
-    let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(w, h);
     let dark = slint::language::ColorScheme::Dark;
+
+    // 尺寸直接读 Tokens, 与真实窗口尺寸永远一致(不再各写一份硬编码)
+    macro_rules! prepare {
+        ($ui:expr, $w:ident, $h:ident) => {{
+            let ui = $ui;
+            let w = ui.global::<Tokens>().$w() as u32;
+            let h = ui.global::<Tokens>().$h() as u32;
+            window.set_size(PhysicalSize::new(w, h));
+            let mut buffer = SharedPixelBuffer::<Rgb8Pixel>::new(w, h);
+            ui.global::<Palette>().set_color_scheme(dark);
+            ui.show().unwrap();
+            render(&window, &mut buffer, w, h);
+        }};
+    }
 
     match which.as_str() {
         "runes" => {
@@ -102,9 +106,7 @@ fn main() {
                     sub_style_id: 8400,
                 },
             ])));
-            ui.global::<Palette>().set_color_scheme(dark);
-            ui.show().unwrap();
-            render(&window, &mut buffer, w, h);
+            prepare!(ui, get_win_runes_w, get_win_runes_h);
         }
         "mini" => {
             let ui = MiniMatchWindow::new().unwrap();
@@ -112,15 +114,11 @@ fn main() {
             ui.set_match_text(slint::SharedString::from(
                 "比分 12:9 | 小龙 2:1 | 先锋 1:0\n我 4/1/6 补刀 182\n对位 1/3/2 补刀 145",
             ));
-            ui.global::<Palette>().set_color_scheme(dark);
-            ui.show().unwrap();
-            render(&window, &mut buffer, w, h);
+            prepare!(ui, get_win_mini_w, get_win_mini_h);
         }
         "settings" => {
             let ui = TtsSettingsWindow::new().unwrap();
-            ui.global::<Palette>().set_color_scheme(dark);
-            ui.show().unwrap();
-            render(&window, &mut buffer, w, h);
+            prepare!(ui, get_win_settings_w, get_win_settings_h);
         }
         _ => {
             let ui = SourcesWindow::new().unwrap();
@@ -131,9 +129,7 @@ fn main() {
             ui.set_live_match_text(slint::SharedString::from(
                 "比分 12:9 | 小龙 2:1 | 先锋 1:0 | 男爵 0:0\n我 4/1/6 补刀 182 金币 8.2k\n对位 1/3/2 补刀 145",
             ));
-            ui.global::<Palette>().set_color_scheme(dark);
-            ui.show().unwrap();
-            render(&window, &mut buffer, w, h);
+            prepare!(ui, get_win_main_w, get_win_main_h);
         }
     }
 }
