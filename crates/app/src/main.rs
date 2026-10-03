@@ -392,50 +392,9 @@ fn main() {
         state_hold.lock().unwrap().ui_tab_manual_at = Some(std::time::Instant::now());
     });
 
-    // -- Launch LoL client --
-    let launch_state = state.clone();
-    sources_window.on_launch_lol_clicked(move || {
-        info!("launch-lol clicked (lol_running check next)");
-        if lcu::cmd::check_if_lol_running() {
-            // 客户端还在(包括对局中后台的 LeagueClientUx): 这次点击的
-            // 语义是把客户端窗口唤到前台, 不再是一句静态提示。
-            let activated = game_screen::activate_lol_client_window();
-            if activated {
-                info!("LoL client already running; window activated");
-            } else {
-                warn!("LoL client already running but no client window found (in game?)");
-            }
-            return;
-        }
-
-        // 启动路径要防丢日志 + 防堵 UI: 定位/拉起/UAC 都可能在
-        // spawn 内部同步等 UAC 确认(用户看不到提示时表现就是"点了没反应"),
-        // 整体挪到后台线程, UI 立即给出"正在启动"反馈。
-        let preferred_path = {
-            let s = launch_state.lock().unwrap();
-            s.lol_launcher_path.clone()
-        };
-        info!("launch-lol: spawning in background (留意 UAC 确认框)");
-        std::thread::Builder::new()
-            .name("lol-launch".into())
-            .spawn(move || {
-                info!(
-                    "launch-lol: preferred_path={:?} (empty = auto locate)",
-                    preferred_path
-                );
-                let result = if preferred_path.trim().is_empty() {
-                    lcu::cmd::launch_lol_client()
-                } else {
-                    lcu::cmd::launch_lol_client_with_path(Some(preferred_path.as_str()))
-                };
-                match &result {
-                    Ok(path) => info!("launch-lol: spawned {}", path.display()),
-                    Err(err) => warn!("launch-lol: ERROR {err}"),
-                }
-            })
-            .map_err(|e| warn!("launch-lol: failed to spawn worker thread: {e}"))
-            .ok();
-    });
+    // -- 主窗不再有「启动/唤出 LoL」按钮(用户 2026-10-03 精简) --
+    // 启动: 程序启动后 0.5s 自动拉起(见 auto-launch task), 无需按钮;
+    // 唤出: 托盘右键菜单「唤出 LoL 客户端窗口」。
 
     let tts_window_for_open = tts_settings_window.as_weak();
     sources_window.on_open_tts_settings_clicked({
@@ -1085,7 +1044,11 @@ fn setup_tray(main_weak: Weak<SourcesWindow>) {
 
     let quit_item = MenuItem::new("退出 ChampR", true, None);
     let quit_id = quit_item.id().clone();
-    let menu = Menu::with_items(&[&quit_item]).expect("tray menu");
+    // 从主窗快捷操作里挪过来的能力(用户 2026-10-03 拍板精简主窗):
+    // LoL 客户端窗口被全屏游戏盖住/丢失时, 这里是唯一还能把它拉回来的入口。
+    let summon_lol_item = MenuItem::new("唤出 LoL 客户端窗口", true, None);
+    let summon_lol_id = summon_lol_item.id().clone();
+    let menu = Menu::with_items(&[&summon_lol_item, &quit_item]).expect("tray menu");
 
     // 真应用图标(编译期内嵌 64px PNG): 与任务栏/Alt-Tab 同一个金色 L。
     // 解码失败才退回代码画的金底深框 —— 编译产物自包含, 不应发生。
@@ -1130,6 +1093,14 @@ fn setup_tray(main_weak: Weak<SourcesWindow>) {
                 while let Ok(menu_event) = menu_rx.try_recv() {
                     if menu_event.id == quit_id {
                         std::process::exit(0);
+                    }
+                    if menu_event.id == summon_lol_id {
+                        let activated = game_screen::activate_lol_client_window();
+                        if activated {
+                            info!("tray: LoL client window brought to front");
+                        } else {
+                            warn!("tray: no LoL client window to summon");
+                        }
                     }
                 }
             }
@@ -1218,7 +1189,6 @@ async fn lcu_monitor_task(
                     if let Some(win) = sw.upgrade() {
                         win.set_lcu_status(SharedString::from("disconnected"));
                         win.set_lcu_summoner(SharedString::from(""));
-                        win.set_lol_running(false);
                     }
                     if let Some(win) = rw.upgrade() {
                         win.set_has_champion(false);
@@ -1252,7 +1222,8 @@ async fn lcu_monitor_task(
             let sw = sources_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = sw.upgrade() {
-                    win.set_lol_running(true);
+                    // 主窗不再显示 LoL 运行灯(用户精简); 这里只保证窗口重绘
+                    win.window().request_redraw();
                 }
             });
         }

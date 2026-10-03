@@ -125,7 +125,6 @@ export component SourcesWindow inherits Window {
     in-out property <string> status: "loading";
     in-out property <string> lcu-status: "disconnected";
     in-out property <string> lcu-summoner: "";
-    in-out property <bool> lol-running: false;
     in-out property <bool> llm-assistance-enabled: false;
     in-out property <int> reminder-tier: 0;
     in-out property <string> match-session-status: "等待对局";
@@ -139,7 +138,6 @@ export component SourcesWindow inherits Window {
     // 构建戳(git 短 hash + 是否有未提交改动), 由 Rust 启动时注入
     in-out property <string> build-stamp: "";
 
-    callback launch-lol-clicked();
     callback open-tts-settings-clicked();
     callback llm-assistance-changed(bool);
     callback reminder-tier-changed(int);
@@ -169,16 +167,6 @@ export component SourcesWindow inherits Window {
                     text: "快捷操作";
                     font-size: Tokens.f-section;
                     font-weight: 600;
-                }
-
-                Button {
-                    // 永不置灰: 未运行=启动, 已运行=把客户端窗口唤到前台
-                    text: root.lol-running ? "🚀 唤出 LoL 窗口" : "🚀 启动 LoL";
-                    height: Tokens.btn-height;
-                    horizontal-stretch: 1;
-                    clicked => {
-                        root.launch-lol-clicked();
-                    }
                 }
 
                 Button {
