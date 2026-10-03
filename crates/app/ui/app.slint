@@ -126,12 +126,7 @@ export component SourcesWindow inherits Window {
     in-out property <string> lcu-status: "disconnected";
     in-out property <string> lcu-summoner: "";
     in-out property <bool> applying-builds: false;
-    in-out property <string> launch-status: "";
     in-out property <bool> lol-running: false;
-    in-out property <string> advice-text: "";
-    in-out property <string> apply-status: "";
-    in-out property <bool> apply-ok: false;
-    in-out property <bool> launch-ok: false;
     in-out property <bool> llm-assistance-enabled: false;
     in-out property <int> reminder-tier: 0;
     in-out property <string> match-session-status: "等待对局";
@@ -147,146 +142,11 @@ export component SourcesWindow inherits Window {
     callback llm-assistance-changed(bool);
     callback reminder-tier-changed(int);
     callback coach-send-clicked();
-    callback lcu-info-clicked();
-    callback launch-info-clicked();
-    callback apply-info-clicked();
-    callback advice-info-clicked();
     callback mini-live-toggled(bool);
 
     VerticalBox {
         padding: Tokens.s-lg;
         spacing: Tokens.s-md;
-
-        Rectangle {
-            background: Tokens.c-card;
-            border-radius: Tokens.radius;
-            border-width: Tokens.border-hair;
-            border-color: Tokens.c-card-border;
-            horizontal-stretch: 1;
-
-            VerticalBox {
-                padding: Tokens.s-md;
-                spacing: Tokens.s-sm;
-
-                Text {
-                    text: "功能状态";
-                    font-size: Tokens.f-section;
-                    font-weight: 600;
-                }
-
-                HorizontalBox {
-                    spacing: Tokens.s-sm;
-                    alignment: center;
-                    height: Tokens.row-height;
-
-                    Text {
-                        text: "LCU 🎮";
-                        font-size: Tokens.f-body;
-                        vertical-alignment: center;
-                        width: Tokens.w-status-label;
-                    }
-                    Rectangle {
-                        width: Tokens.status-dot;
-                        height: Tokens.status-dot;
-                        border-radius: Tokens.status-dot / 2;
-                        background: root.lcu-status == "connected" ? Tokens.c-ok : Tokens.c-err;
-                    }
-                    Button {
-                        text: root.lcu-status == "connected" ? "ℹ️" : "❗";
-                        width: Tokens.icon-btn;
-                        height: Tokens.icon-btn;
-                        clicked => {
-                            root.lcu-info-clicked();
-                        }
-                    }
-                }
-
-                HorizontalBox {
-                    spacing: Tokens.s-sm;
-                    alignment: center;
-                    height: Tokens.row-height;
-
-                    Text {
-                        text: "LoL 🚀";
-                        font-size: Tokens.f-body;
-                        vertical-alignment: center;
-                        width: Tokens.w-status-label;
-                    }
-                    Rectangle {
-                        width: Tokens.status-dot;
-                        height: Tokens.status-dot;
-                        border-radius: Tokens.status-dot / 2;
-                        background: root.launch-ok ? Tokens.c-ok : (root.launch-status != "" ? Tokens.c-err : Tokens.c-muted);
-                    }
-                    Button {
-                        text: root.launch-ok ? "ℹ️" : "❗";
-                        width: Tokens.icon-btn;
-                        height: Tokens.icon-btn;
-                        enabled: root.launch-status != "";
-                        clicked => {
-                            root.launch-info-clicked();
-                        }
-                    }
-                }
-
-                HorizontalBox {
-                    spacing: Tokens.s-sm;
-                    alignment: center;
-                    height: Tokens.row-height;
-
-                    Text {
-                        text: "Builds 🛠️";
-                        font-size: Tokens.f-body;
-                        vertical-alignment: center;
-                        width: Tokens.w-status-label;
-                    }
-                    Rectangle {
-                        width: Tokens.status-dot;
-                        height: Tokens.status-dot;
-                        border-radius: Tokens.status-dot / 2;
-                        background: root.apply-ok ? Tokens.c-ok : (root.apply-status != "" ? Tokens.c-err : Tokens.c-muted);
-                    }
-                    Button {
-                        text: root.apply-ok ? "ℹ️" : "❗";
-                        width: Tokens.icon-btn;
-                        height: Tokens.icon-btn;
-                        enabled: root.apply-status != "";
-                        clicked => {
-                            root.apply-info-clicked();
-                        }
-                    }
-                }
-
-                HorizontalBox {
-                    spacing: Tokens.s-sm;
-                    alignment: center;
-                    height: Tokens.row-height;
-
-                    Text {
-                        text: "Advice 🧠";
-                        font-size: Tokens.f-body;
-                        vertical-alignment: center;
-                        width: Tokens.w-status-label;
-                    }
-                    Rectangle {
-                        width: Tokens.status-dot;
-                        height: Tokens.status-dot;
-                        border-radius: Tokens.status-dot / 2;
-                        background: root.advice-text != "" ? Tokens.c-ok : Tokens.c-muted;
-                    }
-                    Button {
-                        text: "ℹ️";
-                        width: Tokens.icon-btn;
-                        height: Tokens.icon-btn;
-                        enabled: root.advice-text != "";
-                        clicked => {
-                            root.advice-info-clicked();
-                        }
-                    }
-                }
-
-            }
-        }
 
         Rectangle {
             background: Tokens.c-card;
@@ -332,6 +192,15 @@ export component SourcesWindow inherits Window {
                     clicked => {
                         root.open-tts-settings-clicked();
                     }
+                }
+
+                // 反静默/反无解灰按钮: 状态不再单独摆一排灯(用户拍板),
+                // 但"应用出装"灰着时必须说清为什么 —— 只在未连接时出现这一行。
+                if root.lcu-status != "connected" : Text {
+                    text: "LCU 未连接: 启动并登入 LoL 客户端后自动接入(细节见控制台日志)";
+                    font-size: Tokens.f-mini;
+                    color: Tokens.c-text-faint;
+                    wrap: word-wrap;
                 }
             }
         }

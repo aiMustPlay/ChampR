@@ -400,25 +400,18 @@ fn main() {
             );
 
             if dir.is_empty() {
-                let w = weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(win) = w.upgrade() {
-                        win.set_apply_status(SharedString::from(
-                            "League Client directory not found",
-                        ));
-                    }
-                });
+                warn!("apply builds: League Client directory not found");
                 return;
             }
 
             let source = DEFAULT_SOURCE_VALUE.to_string();
 
             // Set applying state
+            info!("apply builds: start (champion_id={current_champion_id}, alias={champion_alias})");
             let w = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = w.upgrade() {
                     win.set_applying_builds(true);
-                    win.set_apply_status(SharedString::from("Applying builds…"));
                 }
             });
 
@@ -435,11 +428,11 @@ fn main() {
                 }
 
                 if champion_id == 0 && champion_alias.is_empty() {
+                    warn!("apply builds: no champion selected in client");
                     let w = weak2.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(win) = w.upgrade() {
                             win.set_applying_builds(false);
-                            win.set_apply_status(SharedString::from("Select a champion first"));
                         }
                     });
                     return;
@@ -474,17 +467,9 @@ fn main() {
                     result.as_ref().err()
                 );
 
-                let apply_ok = result.is_ok();
-                let msg = match result {
-                    Ok(()) => format!("Done! Applied builds for {}", champion_label),
-                    Err(_) => format!("Error applying builds for {}", champion_label),
-                };
-
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(win) = weak2.upgrade() {
                         win.set_applying_builds(false);
-                        win.set_apply_ok(apply_ok);
-                        win.set_apply_status(SharedString::from(&msg));
                     }
                 });
             });
@@ -492,7 +477,6 @@ fn main() {
     });
 
     // -- Launch LoL client --
-    let launch_weak = sources_weak.clone();
     let launch_state = state.clone();
     sources_window.on_launch_lol_clicked(move || {
         info!("launch-lol clicked (lol_running check next)");
@@ -500,18 +484,11 @@ fn main() {
             // 客户端还在(包括对局中后台的 LeagueClientUx): 这次点击的
             // 语义是把客户端窗口唤到前台, 不再是一句静态提示。
             let activated = game_screen::activate_lol_client_window();
-            info!("LoL client already running; activate window -> {activated}");
-            let w = launch_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(win) = w.upgrade() {
-                    win.set_launch_ok(true);
-                    win.set_launch_status(SharedString::from(if activated {
-                        "已唤出 LoL 客户端窗口"
-                    } else {
-                        "LoL 在运行但没找到客户端窗口(可能在对局中)"
-                    }));
-                }
-            });
+            if activated {
+                info!("LoL client already running; window activated");
+            } else {
+                warn!("LoL client already running but no client window found (in game?)");
+            }
             return;
         }
 
@@ -522,16 +499,7 @@ fn main() {
             let s = launch_state.lock().unwrap();
             s.lol_launcher_path.clone()
         };
-        {
-            let w = launch_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(win) = w.upgrade() {
-                    win.set_launch_ok(true);
-                    win.set_launch_status(SharedString::from("正在启动 LoL... (留意 UAC 确认框)"));
-                }
-            });
-        }
-        let lw_worker = launch_weak.clone();
+        info!("launch-lol: spawning in background (留意 UAC 确认框)");
         std::thread::Builder::new()
             .name("lol-launch".into())
             .spawn(move || {
@@ -548,17 +516,6 @@ fn main() {
                     Ok(path) => info!("launch-lol: spawned {}", path.display()),
                     Err(err) => warn!("launch-lol: ERROR {err}"),
                 }
-                let launch_ok = result.is_ok();
-                let msg = match result {
-                    Ok(path) => format!("LoL 客户端已启动: {}", path.display()),
-                    Err(err) => format!("无法启动 LoL 客户端: {err}"),
-                };
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(win) = lw_worker.upgrade() {
-                        win.set_launch_ok(launch_ok);
-                        win.set_launch_status(SharedString::from(&msg));
-                    }
-                });
             })
             .map_err(|e| warn!("launch-lol: failed to spawn worker thread: {e}"))
             .ok();
@@ -649,72 +606,6 @@ fn main() {
                 }
             }
         });
-    });
-
-    let info_weak = sources_window.as_weak();
-    let info_state = state.clone();
-
-    sources_window.on_lcu_info_clicked({
-        let weak = info_weak.clone();
-        let state = info_state.clone();
-        move || {
-            let Some(win) = weak.upgrade() else {
-                return;
-            };
-            let status = win.get_lcu_status().to_string();
-            let summoner = win.get_lcu_summoner().to_string();
-            let text = match status.as_str() {
-                    "connected" => format!("League Client: {summoner}"),
-                    "authorizing" => "League Client detected. Requesting admin access...".to_string(),
-                    "needs-admin" => {
-                        "League Client detected. Admin access is required once to read LCU credentials.".to_string()
-                    }
-                    _ => "League Client not detected".to_string(),
-            };
-            append_info_log(&weak, &state, &text);
-        }
-    });
-
-    sources_window.on_launch_info_clicked({
-        let weak = info_weak.clone();
-        let state = info_state.clone();
-        move || {
-            let Some(win) = weak.upgrade() else {
-                return;
-            };
-            let text = win.get_launch_status().to_string();
-            if !text.is_empty() {
-                append_info_log(&weak, &state, &text);
-            }
-        }
-    });
-
-    sources_window.on_apply_info_clicked({
-        let weak = info_weak.clone();
-        let state = info_state.clone();
-        move || {
-            let Some(win) = weak.upgrade() else {
-                return;
-            };
-            let text = win.get_apply_status().to_string();
-            if !text.is_empty() {
-                append_info_log(&weak, &state, &text);
-            }
-        }
-    });
-
-    sources_window.on_advice_info_clicked({
-        let weak = info_weak.clone();
-        let state = info_state.clone();
-        move || {
-            let Some(win) = weak.upgrade() else {
-                return;
-            };
-            let text = win.get_advice_text().to_string();
-            if !text.is_empty() {
-                append_info_log(&weak, &state, &text);
-            }
-        }
     });
 
     let tts_window_for_apply = tts_settings_window.as_weak();
@@ -1228,14 +1119,11 @@ fn main() {
     rt_handle.spawn(advice_loop(advice_weak, advice_state));
 
     // Auto-launch LoL if it is not already running.
-    let auto_launch_weak = sources_window.as_weak();
     let auto_launch_state = state.clone();
     rt_handle.spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        let mut launch_ok = false;
         let msg = if lcu::cmd::check_if_lol_running() {
-            launch_ok = true;
             "LoL client is already running".to_string()
         } else {
             let preferred_path = {
@@ -1248,20 +1136,11 @@ fn main() {
                 lcu::cmd::launch_lol_client_with_path(Some(preferred_path.as_str()))
             };
             match result {
-                Ok(path) => {
-                    launch_ok = true;
-                    format!("LoL client launched: {}", path.display())
-                }
+                Ok(path) => format!("LoL client launched: {}", path.display()),
                 Err(err) => format!("Unable to launch LoL client: {err}"),
             }
         };
-        let launch_ok = launch_ok;
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(win) = auto_launch_weak.upgrade() {
-                win.set_launch_ok(launch_ok);
-                win.set_launch_status(SharedString::from(&msg));
-            }
-        });
+        info!("auto-launch on startup: {msg}");
     });
 
     // -- Show sources window and run event loop --
@@ -1931,18 +1810,6 @@ fn append_system_log(weak: &Weak<SourcesWindow>, state: &SharedState, text: &str
         s.ui_log.push_str("\n\n");
     }
     refresh_coach_chat_log(weak, state);
-}
-
-fn append_info_log(weak: &Weak<SourcesWindow>, state: &SharedState, text: &str) {
-    let output_log = {
-        let mut s = state.lock().unwrap();
-        s.ui_log.push_str(text);
-        s.ui_log.push_str("\n\n");
-        s.ui_log.clone()
-    };
-    if let Some(win) = weak.upgrade() {
-        win.set_coach_chat_log(SharedString::from(&output_log));
-    }
 }
 
 fn deepseek_web_sidecar(state: &SharedState) -> anyhow::Result<Arc<BrowserSidecar>> {
@@ -2700,12 +2567,7 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
         }
 
         if ai_provider == "deepseek" && deepseek_api_key.is_empty() {
-            let weak = sources_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(win) = weak.upgrade() {
-                    win.set_advice_text(SharedString::from("DeepSeek API Key 未配置"));
-                }
-            });
+            warn!("advice loop: DeepSeek API Key 未配置, 跳过本轮");
             continue;
         }
 
@@ -2735,13 +2597,8 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
         match chat_with_selected_provider(&state, messages).await {
             Ok(advice) => {
                 append_coach_message(&sources_weak, &state, "assistant", &advice);
+                info!("advice ready ({} chars)", advice.chars().count());
                 let tts_text = advice.clone();
-                let weak = sources_weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(win) = weak.upgrade() {
-                        win.set_advice_text(SharedString::from(&advice));
-                    }
-                });
                 let (tts_config_for_speech, speech_lock) = {
                     let s = state.lock().unwrap();
                     (s.tts_config.clone(), s.speech_lock.clone())
@@ -2752,13 +2609,9 @@ async fn advice_loop(sources_weak: Weak<SourcesWindow>, state: SharedState) {
                 });
             }
             Err(err) => {
-                let msg = format!("DeepSeek 请求失败: {err}");
-                let weak = sources_weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(win) = weak.upgrade() {
-                        win.set_advice_text(SharedString::from(&msg));
-                    }
-                });
+                let msg = format!("大师请求失败: {err}");
+                warn!("{msg}");
+                append_coach_message(&sources_weak, &state, "assistant", &msg);
             }
         }
     }
@@ -3133,10 +2986,13 @@ async fn auto_write_builds(
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(win) = weak.upgrade() {
                 win.set_applying_builds(applying);
-                win.set_apply_ok(ok);
-                win.set_apply_status(SharedString::from(text));
             }
         });
+        if ok {
+            info!("{text}");
+        } else {
+            warn!("{text}");
+        }
     };
 
     set_status(true, false, format!("自动写入推荐出装(英雄 {champion_id})…"));
