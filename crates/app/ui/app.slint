@@ -245,47 +245,18 @@ export component SourcesWindow inherits Window {
         padding: Tokens.s-lg;
         spacing: Tokens.s-md;
 
-        Rectangle {
-            background: Tokens.c-card;
-            border-radius: Tokens.radius;
-            border-width: Tokens.border-hair;
-            border-color: Tokens.c-card-border;
-            horizontal-stretch: 1;
-
-            VerticalBox {
-                padding: Tokens.s-md;
-                spacing: Tokens.s-sm;
-
-                Text {
-                    text: "快捷操作";
-                    font-size: Tokens.f-section;
-                    font-weight: 600;
-                }
-
-                GoldButton {
-                    text: "🎛 设置";
-                    height: Tokens.btn-height;
-                    horizontal-stretch: 1;
-                    clicked => {
-                        root.open-tts-settings-clicked();
-                    }
-                }
-
-                // 反静默/反无解灰按钮: 状态不再单独摆一排灯(用户拍板),
-                // 但"应用出装"灰着时必须说清为什么 —— 只在未连接时出现这一行。
-                if root.lcu-status != "connected" : Text {
-                    text: "LCU 未连接: 启动并登入 LoL 客户端后自动接入(细节见控制台日志)";
-                    font-size: Tokens.f-mini;
-                    color: Tokens.c-text-faint;
-                    wrap: word-wrap;
-                }
-            }
+        // 反静默: LCU 未连接时把原因说在明面上(不摆状态灯, 但灰按钮要有解释)
+        if root.lcu-status != "connected" : Text {
+            text: "LCU 未连接: 启动并登入 LoL 客户端后自动接入(细节见控制台日志)";
+            font-size: Tokens.f-mini;
+            color: Tokens.c-text-faint;
+            wrap: word-wrap;
         }
 
         // 单一输出区(用户 2026-10-02 拍板): 对局快照与大师对话共用一个框,
         // 谁刚输出谁上前台; 手动点过 Tab 后 45 秒内不被自动抢台。
-        // 全部固定高度, 不使用 stretch(固定 height + stretch 混用会互相打架,
-        // 2026-10-03 卡片里空一大块的根因); 窗口高度按内容裁剪, 见 win-main-h。
+        // 余量归属: 文本框 vertical-stretch 吃掉卡片内余量(并向上传递到卡片),
+        // 没有 stretch 认领时 Slint 会把余量塞在子元素之间形成空白(2026-10-03)。
         Rectangle {
             background: Tokens.c-card;
             border-radius: Tokens.radius;
@@ -403,12 +374,29 @@ export component SourcesWindow inherits Window {
             }
         }
 
-        // 构建戳: 一眼确认跑的是哪一版(排查"改了没生效"用)
-        Text {
-            text: "构建 " + root.build-stamp;
-            font-size: Tokens.f-mini;
-            color: Tokens.c-text-faint;
-            horizontal-alignment: center;
+        // 底部一行: 左边构建戳(排查"改了没生效"), 右边设置入口。
+        // 用户 2026-10-03 拍板: 只为装一个按钮的"快捷操作"卡片整张删掉。
+        HorizontalBox {
+            alignment: center;
+            spacing: Tokens.s-sm;
+
+            Text {
+                text: "构建 " + root.build-stamp;
+                font-size: Tokens.f-mini;
+                color: Tokens.c-text-faint;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 1px;
+            }
+            GoldButton {
+                text: "⚙ 设置";
+                width: 108px;
+                clicked => {
+                    root.open-tts-settings-clicked();
+                }
+            }
         }
 
     }
