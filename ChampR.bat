@@ -1,18 +1,23 @@
 @echo off
 cd /d "%~dp0"
-rem Already running? Then the exe is locked and cargo cannot relink it - the user
-rem would just see the old window and think the update did nothing. Say so instead.
+rem Already running? The running exe locks target\debug\champr.exe, so cargo cannot
+rem relink it and the user just sees the old window. Offer to close it and rebuild
+rem instead of dead-ending (that dead end wasted a whole round of debugging).
 tasklist /fi "imagename eq champr.exe" 2>nul | find /i "champr.exe" >nul
 if not errorlevel 1 (
   echo.
-  echo ChampR is already running - the running exe locks target\debug\champr.exe,
-  echo so a new build cannot be written.
-  echo.
-  echo   * To keep using it: click the tray icon to bring the window back.
-  echo   * To load the newest build: tray right-click - Exit ChampR, then run this again.
-  echo.
-  pause
-  exit /b 0
+  echo ChampR is running - its exe is locked, so the newest build cannot be written.
+  choice /c YN /n /m "Close the running ChampR and rebuild now? [Y/N] "
+  if errorlevel 2 (
+    echo.
+    echo    Kept it running. To reload the newest build later: tray right-click,
+    echo    Exit ChampR, then start this again.
+    timeout /t 6 >nul
+    exit /b 0
+  )
+  echo Closing the running instance...
+  taskkill /im champr.exe /f >nul 2>&1
+  timeout /t 2 >nul
 )
 start "ChampR Server" powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 server
 rem Wait for the backend port (max 90s). No server = runes and counter stay silent.

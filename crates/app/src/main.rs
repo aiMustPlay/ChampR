@@ -1044,6 +1044,37 @@ fn main() {
     sources_window.show().unwrap();
     // 手动固定的显示器(在 show 之后才有 size())
     pin_window_to_monitor(sources_window.window(), &state, PinAnchor::Center);
+    // show() 刚回来时布局可能还没落定(size()==0 → 摆位无效), 延迟补摆一次。
+    {
+        let win_weak = sources_window.as_weak();
+        let state_pin = state.clone();
+        slint::Timer::single_shot(Duration::from_millis(200), move || {
+            if let Some(win) = win_weak.upgrade() {
+                pin_window_to_monitor(win.window(), &state_pin, PinAnchor::Center);
+                let pos = win.window().position();
+                let size = win.window().size();
+                info!(
+                    "main window placed: pos=({}, {}) size={}x{}",
+                    pos.x, pos.y, size.width, size.height
+                );
+            }
+        });
+    }
+    // 窗口几何写日志: "启动后什么都看不见" 这类问题, 有坐标就能一眼判断
+    // 是没起来、还是跑到屏幕外去了(2026-10-03)。
+    {
+        let w = sources_window.window();
+        let pos = w.position();
+        let size = w.size();
+        info!(
+            "main window shown: pos=({}, {}) size={}x{} logical, monitors={}",
+            pos.x,
+            pos.y,
+            size.width,
+            size.height,
+            state.lock().map(|s| s.monitors.len()).unwrap_or(0)
+        );
+    }
     // 系统托盘: 左键召唤主窗, 右键菜单退出。
     // 独占全屏游戏会盖住主窗 —— 没有托盘就"启动后找不到应用"。
     setup_tray(sources_window.as_weak());
@@ -3029,27 +3060,53 @@ enum PinAnchor {
     Center,
 }
 
-/// 窗口比目标显示器工作区还大时, 按比例缩回来(保留宽高比)。
-/// 起因: 主窗按黄金比放大到 840×1360 后, 用户改缩放比例或换小屏就会
-/// 被切掉标题栏/底栏 —— 这里兜底, 并把结果写日志(不静默)。
-fn clamp_window_to_work_area(window: &slint::Window, m: &monitors::Monitor) {
+/// 窗口外框(标题栏+边框)相对客户区的额外物理像素。
+/// 实测 100% 缩放下: 高 37 / 宽 15 —— 夹紧与摆位必须把它算进去,
+/// 否则客户区"刚好放得下"时外框仍会顶出工作区(2026-10-03)。
+const FRAME_H: i32 = 40;
+const FRAME_W: i32 = 20;
+
+/// 选目标显示器并把窗口**完整**放进工作区(尺寸超了就按比例缩, 位置再纠偏)。
+///
+/// 2026-10-03 事故链: 夹紧只在"固定显示器"分支里跑 → 默认不夹 → 840×1360 被
+/// Windows 摆到屏外; 补了夹紧又发现尺寸未定(0)时居中会把屏幕中心当左上角;
+/// 最后发现外框没算进去, 底部仍差一点。三处都在这里一并处理。
+fn place_window_in_work_area(window: &slint::Window, m: &monitors::Monitor, anchor: PinAnchor) {
     let (l, t, r, b) = m.work_rect;
-    let avail_w = (r - l - 24).max(320);
-    let avail_h = (b - t - 24).max(240);
-    let size = window.size(); // 物理像素
-    let (w, h) = (size.width as i32, size.height as i32);
-    if w <= avail_w && h <= avail_h {
+    let avail_w = ((r - l) - FRAME_W - 16).max(320);
+    let avail_h = ((b - t) - FRAME_H - 16).max(240);
+
+    let size = window.size(); // 客户区; show() 后才有意义
+    let (mut w, mut h) = (size.width as i32, size.height as i32);
+    if w <= 1 || h <= 1 {
+        // 尺寸还没定: 摆了也是错的位置, 交给调用方的延迟补摆
         return;
     }
-    let scale = f64::min(avail_w as f64 / w as f64, avail_h as f64 / h as f64);
-    let nw = ((w as f64 * scale) as u32).max(320);
-    let nh = ((h as f64 * scale) as u32).max(240);
-    warn!("window {w}x{h} exceeds work area {avail_w}x{avail_h}; clamped to {nw}x{nh}");
-    window.set_size(slint::PhysicalSize::new(nw, nh));
+    if w > avail_w || h > avail_h {
+        let scale = f64::min(avail_w as f64 / w as f64, avail_h as f64 / h as f64);
+        w = ((w as f64 * scale) as i32).max(320);
+        h = ((h as f64 * scale) as i32).max(240);
+        warn!("window {size:?} exceeds work area; resized to {w}x{h}");
+        window.set_size(slint::PhysicalSize::new(w as u32, h as u32));
+    }
+
+    // 位置范围按"外框"算, 保证标题栏和底边都在屏内
+    let max_x = (r - w - FRAME_W).max(l);
+    let max_y = (b - h - FRAME_H).max(t);
+    let (x, y) = match anchor {
+        PinAnchor::TopRight => (max_x - 12, t + 8),
+        PinAnchor::Center => (
+            (l + r).div_euclid(2) - w.div_euclid(2),
+            (t + b).div_euclid(2) - h.div_euclid(2),
+        ),
+    };
+    window.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(
+        x.clamp(l, max_x),
+        y.clamp(t, max_y),
+    )));
 }
 
-/// 将窗口放进 pinned_monitor 指定显示器的工作区。
-/// 在 `show()` 之后调用才能拿到尺寸做精确锚定; 未配置/无该显示器时 no-op。
+/// 将窗口放进 pinned_monitor 指定显示器的工作区(未固定时用主显示器)。
 fn pin_window_to_monitor(window: &slint::Window, state: &SharedState, anchor: PinAnchor) {
     let (idx, mons) = {
         let Ok(s) = state.lock() else {
@@ -3057,40 +3114,21 @@ fn pin_window_to_monitor(window: &slint::Window, state: &SharedState, anchor: Pi
         };
         (s.pinned_monitor, s.monitors.clone())
     };
-    if idx < 0 {
-        return;
+    let target = if idx >= 0 {
+        mons.get(idx as usize)
+    } else {
+        // 未固定或索引越界 → 主显示器(找不到 primary 就用第一个)
+        mons.iter().find(|m| m.is_primary).or_else(|| mons.first())
+    };
+    if let Some(m) = target {
+        place_window_in_work_area(window, m, anchor);
     }
-    let Some(m) = mons.get(idx as usize) else {
-        // 索引越界 = 之前配置的显示器现在不在, 静默回退不固定
-        return;
-    };
-    clamp_window_to_work_area(window, m);
-    let (l, t, r, _b) = m.work_rect;
-    let size = window.size(); // 物理像素; show() 后才有意义
-    let (x, y) = match anchor {
-        PinAnchor::TopRight => ((r - size.width as i32).max(l) - 24, t + 40),
-        PinAnchor::Center => (
-            (l + r).div_euclid(2) - (size.width as i32).div_euclid(2),
-            (t + _b).div_euclid(2) - (size.height as i32).div_euclid(2),
-        ),
-    };
-    window.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(x, y)));
 }
 
 /// 将窗口放进**指定**显示器的工作区(不读 settings, 调用方已经决定了屏)。
 /// 迷你窗用这条: 目标屏由 game_screen 规则求出, 与用户 pinned_monitor 无关。
 fn pin_window_on_monitor(window: &slint::Window, m: &monitors::Monitor, anchor: PinAnchor) {
-    clamp_window_to_work_area(window, m);
-    let (l, t, r, b) = m.work_rect;
-    let size = window.size();
-    let (x, y) = match anchor {
-        PinAnchor::TopRight => ((r - size.width as i32).max(l) - 24, t + 40),
-        PinAnchor::Center => (
-            (l + r).div_euclid(2) - (size.width as i32).div_euclid(2),
-            (t + b).div_euclid(2) - (size.height as i32).div_euclid(2),
-        ),
-    };
-    window.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(x, y)));
+    place_window_in_work_area(window, m, anchor);
 }
 
 // ---------------------------------------------------------------------------
