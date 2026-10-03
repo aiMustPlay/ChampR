@@ -29,10 +29,24 @@ pub fn make_client() -> &'static reqwest::Client {
     &CLIENT
 }
 
+/// LCU 凭据 URL 的两种形态在这个仓库里长期混用:
+/// 裸的 `riot:token@127.0.0.1:port`(LCU 命令行原样读出来的)和
+/// 带 scheme 的 `https://riot:token@127.0.0.1:port`。
+/// 裸形态直接喂 reqwest 必然 "builder error for url" —— 而且失败得很安静,
+/// 谁调用谁中招(2026-10-02 手动对位 / accept 两处连环踩)。
+/// 所有出网请求统一从这里过, 缺 scheme 就补 https://。
+pub fn lcu_endpoint(raw: &str) -> String {
+    if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    }
+}
+
 pub async fn make_get_request<T: DeserializeOwned>(endpoint: &String) -> Result<T, LcuError> {
     let client = make_client();
     client
-        .get(endpoint)
+        .get(lcu_endpoint(endpoint))
         .version(reqwest::Version::HTTP_2)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
@@ -74,16 +88,8 @@ pub async fn get_session(auth_url: &String) -> Result<Option<i64>, LcuError> {
 
 /// 排队就绪自动接受对局。幂等: LCU 对重复 accept 返回 204/错误均不可见影响,
 /// 调用方自己保证只在状态翻转瞬间调用一次。
-///
-/// auth_url 传进来是 `riot:token@127.0.0.1:port` 不带 scheme,
-/// 直接拼 reqwest 必炸 "builder error for url"(2026-10-01 自动接受撞针),
-/// 这里统一补齐 https。
 pub async fn accept_ready_check(auth_url: &str) -> Result<(), LcuError> {
-    let base = if auth_url.contains("://") {
-        auth_url.to_string()
-    } else {
-        format!("https://{auth_url}")
-    };
+    let base = lcu_endpoint(auth_url);
     let client = make_client();
     client
         .post(format!("{base}/lol-matchmaking/v1/ready-check/accept"))
@@ -130,6 +136,7 @@ pub async fn get_ranked_stats(auth_url: &str, puuid: &str) -> Result<Value, LcuE
 }
 
 pub async fn apply_rune(endpoint: String, rune: Rune) -> Result<(), LcuError> {
+    let endpoint = lcu_endpoint(&endpoint);
     let runes: Value = make_get_request(&format!("{endpoint}/lol-perks/v1/pages")).await?;
 
     let mut id = 0;
@@ -173,7 +180,7 @@ pub async fn appy_rune_and_builds(
 
 pub async fn get_rune_image(endpoint: String, icon_path: String) -> Result<Bytes, FetchError> {
     let client = make_client();
-    let url = format!("{endpoint}/lol-game-data/assets/v1/{icon_path}");
+    let url = format!("{}/lol-game-data/assets/v1/{icon_path}", lcu_endpoint(&endpoint));
     if let Ok(resp) = client.get(&url).send().await {
         if let Ok(bytes) = resp.bytes().await {
             return Ok(bytes);
@@ -310,7 +317,8 @@ pub async fn list_all_perks(endpoint: &String) -> Result<Vec<Perk>, LcuError> {
 
 pub async fn fetch_image_data(url: &String) -> Result<Bytes, FetchError> {
     let client = make_client();
-    match client.get(url).send().await.map_err(|_| FetchError::Failed) {
+    let url = lcu_endpoint(url);
+    match client.get(&url).send().await.map_err(|_| FetchError::Failed) {
         Ok(res) => {
             if res.status().is_success() {
                 return res.bytes().await.map_err(|_| FetchError::Failed);
@@ -385,7 +393,48 @@ pub fn make_sub_msg() -> Message {
 }
 
 pub fn make_champion_avatar_url(endpoint: &String, id: u64) -> Url {
-    format!("https://{endpoint}/lol-game-data/assets/v1/champion-icons/{id}.png")
+    format!("{}/lol-game-data/assets/v1/champion-icons/{id}.png", lcu_endpoint(endpoint))
         .parse::<Url>()
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lcu_endpoint;
+
+    /// 2026-10-02 事故回归: LCU 命令行读出来的凭据是裸的
+    /// `riot:token@127.0.0.1:port`。它其实能被 Url 解析成 scheme="riot",
+    /// 所以错误不会发生在解析阶段, 而是 reqwest 发请求时报
+    /// "builder error for url" —— 极其难查。补 https:// 后才是合法请求目标。
+    #[test]
+    fn bare_credentials_url_is_not_directly_requestable() {
+        let bare = "riot:abc@127.0.0.1:60092/lol-champ-select/v1/session";
+        let parsed = bare.parse::<reqwest::Url>().unwrap();
+        assert_ne!(parsed.scheme(), "https", "裸形态的 scheme 不是 https, reqwest 会拒绝");
+        assert_eq!(parsed.scheme(), "riot");
+    }
+
+    #[test]
+    fn lcu_endpoint_normalizes_both_forms() {
+        let bare = "riot:abc@127.0.0.1:60092";
+        let full = "https://riot:abc@127.0.0.1:60092";
+        assert_eq!(lcu_endpoint(bare), full);
+        // 已经带 scheme 的原样返回, 不重复叠加
+        assert_eq!(lcu_endpoint(full), full);
+        assert_eq!(lcu_endpoint(bare), lcu_endpoint(full));
+    }
+
+    #[test]
+    fn normalized_endpoint_is_requestable_with_auth_in_userinfo() {
+        let url = format!(
+            "{}/lol-champ-select/v1/session",
+            lcu_endpoint("riot:abc@127.0.0.1:60092")
+        );
+        let parsed = url.parse::<reqwest::Url>().unwrap();
+        assert_eq!(parsed.scheme(), "https");
+        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+        assert_eq!(parsed.port(), Some(60092));
+        assert_eq!(parsed.username(), "riot");
+        assert_eq!(parsed.password(), Some("abc"));
+    }
 }

@@ -1071,7 +1071,7 @@ fn main() {
                     return;
                 }
             };
-            let (available, summary, status) = {
+            let (available, summary, status, intel, war) = {
                 let mut s = state2.lock().unwrap();
                 let (plan, reason) =
                     compute_counter_plan(Some(&session), &s, Some(enemy_cid as i64));
@@ -1087,14 +1087,23 @@ fn main() {
                     }
                     text
                 });
+                // 一次点选同时点亮三张对位卡(counter / 对位心理 / 兵法心战)
+                let intel = compute_opponent_intel(Some(&session), &s, Some(enemy_cid as i64))
+                    .unwrap_or_default();
+                let war = compute_war_text(Some(&session), &s, Some(enemy_cid as i64))
+                    .unwrap_or_default();
                 s.counter_plan = plan;
-                (availability, summary_text, status_text)
+                (availability, summary_text, status_text, intel, war)
             };
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = win_weak.upgrade() {
                     win.set_counter_available(available);
                     win.set_counter_summary(SharedString::from(summary.unwrap_or_default()));
                     win.set_counter_status(SharedString::from(status));
+                    win.set_opponent_header(SharedString::from(intel.0));
+                    win.set_opponent_intel(SharedString::from(intel.1));
+                    win.set_war_header(SharedString::from(war.0));
+                    win.set_war_body(SharedString::from(war.1));
                     if available {
                         win.set_apply_rune_status(SharedString::from(
                             "对位已手动确认: 可点 [应用 Counter 符文]",
@@ -1758,12 +1767,17 @@ async fn lcu_monitor_task(
                                         }
                                         text
                                     });
-                                    let (ih, ib) = compute_opponent_intel(session_data, &s)
-                                        .map(|(h, b)| (h, b))
-                                        .unwrap_or_default();
-                                    let (wh, wb) = compute_war_text(session_data, &s)
-                                        .map(|(h, b)| (h, b))
-                                        .unwrap_or_default();
+                                    let (ih, ib) = compute_opponent_intel(
+                                        session_data,
+                                        &s,
+                                        s.manual_counter_target,
+                                    )
+                                    .map(|(h, b)| (h, b))
+                                    .unwrap_or_default();
+                                    let (wh, wb) =
+                                        compute_war_text(session_data, &s, s.manual_counter_target)
+                                            .map(|(h, b)| (h, b))
+                                            .unwrap_or_default();
                                     let previously = s.counter_plan.is_some();
                                     let available = plan.is_some();
                                     let newly = available && !previously;
@@ -2949,14 +2963,22 @@ fn render_roster_texts(session_data: Option<&Value>, s: &AppState) -> Option<(St
 fn compute_opponent_intel(
     session_data: Option<&Value>,
     s: &AppState,
+    manual_target: Option<i64>,
 ) -> Option<(String, String)> {
     let session = session_data?;
     let snapshot = lcu::match_context::ChampSelectSnapshot::from_session(session).ok()?;
-    let opponent = snapshot.lane_opponent()?;
-    let opp_id = opponent.effective_champion();
-    if opp_id == 0 {
-        return None;
-    }
+    // 对位来源: 手动点选优先(腾讯客户端敌方分路恒为空, 自动匹配不可用)
+    let opp_id = match manual_target {
+        Some(target) => target,
+        None => {
+            let opponent = snapshot.lane_opponent()?;
+            let id = opponent.effective_champion();
+            if id == 0 {
+                return None;
+            }
+            id
+        }
+    };
     let champ = s
         .champions_map
         .values()
@@ -2973,14 +2995,25 @@ fn compute_opponent_intel(
 fn compute_war_text(
     session_data: Option<&Value>,
     s: &AppState,
+    manual_target: Option<i64>,
 ) -> Option<(String, String)> {
     let session = session_data?;
     let snapshot = lcu::match_context::ChampSelectSnapshot::from_session(session).ok()?;
     let local = snapshot.local_member()?;
     let local_id = local.effective_champion();
-    let opponent = snapshot.lane_opponent()?;
-    let opp_id = opponent.effective_champion();
-    if local_id == 0 || opp_id == 0 {
+    // 对位来源: 手动点选优先(与 counter 卡同一把钥匙)
+    let opp_id = match manual_target {
+        Some(target) => target,
+        None => {
+            let opponent = snapshot.lane_opponent()?;
+            let id = opponent.effective_champion();
+            if id == 0 {
+                return None;
+            }
+            id
+        }
+    };
+    if local_id == 0 {
         return None;
     }
     let own_info = s
