@@ -134,6 +134,8 @@ export component SourcesWindow inherits Window {
     in-out property <bool> coach-busy: false;
     in-out property <string> live-match-text: "";
     in-out property <bool> mini-live-enabled: true;
+    // 输出区当前 Tab: 0 = 对局数据, 1 = 大师对话(谁刚输出谁上前台)
+    in-out property <int> output-tab: 0;
 
     callback launch-lol-clicked();
     callback open-tts-settings-clicked();
@@ -141,6 +143,10 @@ export component SourcesWindow inherits Window {
     callback reminder-tier-changed(int);
     callback coach-send-clicked();
     callback mini-live-toggled(bool);
+    // 手动切输出 Tab(调用方记录时间, 45 秒内暂停自动跟随)
+    callback output-tab-clicked(int);
+    // 正在输入时续期静默(不许对局快照把输入框抢走)
+    callback output-tab-hold();
 
     VerticalBox {
         padding: Tokens.s-lg;
@@ -193,6 +199,8 @@ export component SourcesWindow inherits Window {
             }
         }
 
+        // 单一输出区(用户 2026-10-02 拍板): 对局快照与大师对话共用一个框,
+        // 谁刚输出谁上前台; 手动点过 Tab 后 45 秒内不被自动抢台。
         Rectangle {
             background: Tokens.c-card;
             border-radius: Tokens.radius;
@@ -205,21 +213,31 @@ export component SourcesWindow inherits Window {
                 spacing: Tokens.s-sm;
 
                 HorizontalBox {
-                    spacing: Tokens.s-sm;
+                    spacing: Tokens.s-xs;
                     alignment: center;
                     height: Tokens.row-height;
 
-                    Text {
-                        text: "对局数据";
-                        font-size: Tokens.f-section;
-                        font-weight: 600;
-                        vertical-alignment: center;
+                    Button {
+                        text: "📊 对局数据";
+                        primary: root.output-tab == 0;
+                        clicked => {
+                            root.output-tab = 0;
+                            root.output-tab-clicked(0);
+                        }
+                    }
+                    Button {
+                        text: "🧠 大师对话";
+                        primary: root.output-tab == 1;
+                        clicked => {
+                            root.output-tab = 1;
+                            root.output-tab-clicked(1);
+                        }
                     }
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 1px;
                     }
-                    CheckBox {
+                    if root.output-tab == 0 : CheckBox {
                         text: "开局弹迷你窗";
                         checked: root.mini-live-enabled;
                         toggled => {
@@ -227,52 +245,13 @@ export component SourcesWindow inherits Window {
                             root.mini-live-toggled(root.mini-live-enabled);
                         }
                     }
-                }
-
-                Text {
-                    text: "勾选后: 每局进场在另一块屏弹 340×220 置顶小窗(比分/资源/出装,2.5s 刷一次); 弹完焦点立刻还给游戏, 永不落在游戏屏; 只有一块屏时不弹。";
-                    font-size: Tokens.f-mini;
-                    color: Tokens.c-text-faint;
-                    wrap: word-wrap;
-                }
-
-                TextEdit {
-                    text: root.live-match-text != "" ? root.live-match-text : "等待对局数据(进入英雄选择或对局后自动刷新)";
-                    read-only: true;
-                    height: Tokens.panel-match-h;
-                    horizontal-stretch: 1;
-                    font-size: Tokens.f-aux;
-                }
-            }
-        }
-
-        Rectangle {
-            background: Tokens.c-card;
-            border-radius: Tokens.radius;
-            border-width: Tokens.border-hair;
-            border-color: Tokens.c-card-border;
-            horizontal-stretch: 1;
-
-            VerticalBox {
-                padding: Tokens.s-md;
-                spacing: Tokens.s-sm;
-
-                HorizontalBox {
-                    spacing: Tokens.s-sm;
-                    alignment: center;
-                    height: Tokens.row-height;
-
-                    Text {
+                    if root.output-tab == 1 : Text {
                         text: root.match-session-status;
                         font-size: Tokens.f-aux;
                         vertical-alignment: center;
                         color: Tokens.c-text-secondary;
                     }
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        height: 1px;
-                    }
-                    CheckBox {
+                    if root.output-tab == 1 : CheckBox {
                         text: "大师对局辅助";
                         checked: root.llm-assistance-enabled;
                         toggled => {
@@ -280,7 +259,7 @@ export component SourcesWindow inherits Window {
                             root.llm-assistance-changed(root.llm-assistance-enabled);
                         }
                     }
-                    ComboBox {
+                    if root.output-tab == 1 : ComboBox {
                         width: Tokens.w-tier-combo;
                         model: ["提醒: 全部", "提醒: 仅关键事件", "提醒: 静音(记日志)"];
                         current-index: root.reminder-tier;
@@ -291,25 +270,39 @@ export component SourcesWindow inherits Window {
                     }
                 }
 
-                LineEdit {
+                Text {
+                    text: root.output-tab == 0
+                        ? "勾选后: 每局进场在另一块屏弹 340×220 置顶小窗(比分/资源/出装,2.5s 刷一次); 弹完焦点立刻还给游戏, 永不落在游戏屏; 只有一块屏时不弹。"
+                        : "大师的输出与你的提问都在这一个框里; 手动切 Tab 后 45 秒内不会被对局快照抢走。";
+                    font-size: Tokens.f-mini;
+                    color: Tokens.c-text-faint;
+                    wrap: word-wrap;
+                }
+
+                // 一个框, 两个缓冲(互不覆盖): 谁在前台显示谁的
+                TextEdit {
+                    text: root.output-tab == 0
+                        ? (root.live-match-text != "" ? root.live-match-text : "等待对局数据(进入英雄选择或对局后自动刷新)")
+                        : (root.coach-chat-log != "" ? root.coach-chat-log : "还没有对话。向大师提问试试。");
+                    read-only: true;
+                    height: Tokens.panel-log-h;
+                    horizontal-stretch: 1;
+                    vertical-stretch: 1;
+                    font-size: Tokens.f-aux;
+                }
+
+                if root.output-tab == 1 : LineEdit {
                     text: root.coach-input;
                     placeholder-text: "向大师提问, 回车发送…";
                     horizontal-stretch: 1;
                     edited(text) => {
                         root.coach-input = text;
+                        // 打字期间持续续期, 对局快照不抢台
+                        root.output-tab-hold();
                     }
                     accepted => {
                         root.coach-send-clicked();
                     }
-                }
-
-                // 拉高主窗时日志区吸收剩余空间 (stretch=1, 其余卡片固定)
-                TextEdit {
-                    text: root.coach-chat-log;
-                    read-only: true;
-                    height: Tokens.panel-log-h;
-                    horizontal-stretch: 1;
-                    vertical-stretch: 1;
                 }
 
                 if root.coach-busy : Text {

@@ -89,6 +89,10 @@ struct AppState {
     /// 腾讯 LCU 可能把敌方分路藏起来导致自动对位失效时的人工兜底;
     /// 我方换英雄/会话重建即清空。
     manual_counter_target: Option<i64>,
+    /// 主窗输出区最后一次**手动**切 Tab 的时刻。
+    /// 手动切台后 UI_TAB_MANUAL_HOLD 内不被"谁输出谁上前台"抢走 ——
+    /// 用户正在读大师回答时, 2.5s 一次的对局快照不许把它顶掉。
+    ui_tab_manual_at: Option<std::time::Instant>,
     /// User closed the runes window during this champ-select; do not re-open
     /// it automatically until a new session starts.
     runes_window_dismissed: bool,
@@ -165,6 +169,7 @@ impl Default for AppState {
             last_applied_plan_sig: String::new(),
             counter_plan: None,
     manual_counter_target: None,
+    ui_tab_manual_at: None,
             runes_window_dismissed: false,
             tts_config: tts::TtsConfig::default(),
             lol_launcher_path: r"C:\WeGameApps\英雄联盟（含经典模式）\WeGameLauncher\launcher.exe".to_string(),
@@ -374,6 +379,18 @@ fn main() {
     // 属于"看不见又没反馈"的僵尸功能。锁后自动出装开关保留(默认关)。
     let rt_handle = tokio::runtime::Runtime::new().unwrap();
     let rt_handle_ref = rt_handle.handle().clone();
+
+    // -- 主窗输出区: 手动切 Tab(45 秒静默期, 期间自动跟随让位) --
+    let state_tab = state.clone();
+    sources_window.on_output_tab_clicked(move |tab| {
+        state_tab.lock().unwrap().ui_tab_manual_at = Some(std::time::Instant::now());
+        info!("output tab switched manually -> {tab} (auto-follow held {UI_TAB_MANUAL_HOLD:?})");
+    });
+    // 打字续期: 只更新时间戳, 不刷日志(每个按键都触发)
+    let state_hold = state.clone();
+    sources_window.on_output_tab_hold(move || {
+        state_hold.lock().unwrap().ui_tab_manual_at = Some(std::time::Instant::now());
+    });
 
     // -- Launch LoL client --
     let launch_state = state.clone();
@@ -1667,11 +1684,38 @@ fn coach_message_display(role: &str, content: &str) -> String {
     }
 }
 
+/// 主窗输出区 Tab: 0 = 对局数据(2.5s 覆盖快照), 1 = 大师对话(追加流)。
+const UI_TAB_MATCH: i32 = 0;
+const UI_TAB_COACH: i32 = 1;
+/// 手动切台后的静默期: 期间谁输出都不抢台。
+const UI_TAB_MANUAL_HOLD: Duration = Duration::from_secs(45);
+
+/// 单一输出区"谁刚出内容谁上前台"(用户 2026-10-02 拍板)。
+/// 手动点过 Tab 的静默期内直接让位给用户 —— 可解释优先于自动。
+fn activate_output_tab(weak: &Weak<SourcesWindow>, state: &SharedState, tab: i32) {
+    {
+        let s = state.lock().unwrap();
+        if let Some(at) = s.ui_tab_manual_at {
+            if at.elapsed() < UI_TAB_MANUAL_HOLD {
+                return;
+            }
+        }
+    }
+    let weak = weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(win) = weak.upgrade() {
+            win.set_output_tab(tab);
+        }
+    });
+}
+
 fn refresh_coach_chat_log(weak: &Weak<SourcesWindow>, state: &SharedState) {
     let output_log = {
         let s = state.lock().unwrap();
         s.ui_log.clone()
     };
+    // 大师出了新内容 → 输出区切到对话页(手动静默期内不抢)
+    activate_output_tab(weak, state, UI_TAB_COACH);
     let weak = weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(win) = weak.upgrade() {
@@ -2230,6 +2274,8 @@ async fn live_match_panel_task(
 
         if text != last_text {
             last_text = text.clone();
+            // 对局快照出了新内容 → 输出区切到对局页(手动静默期内不抢)
+            activate_output_tab(&weak, &state, UI_TAB_MATCH);
             let weak = weak.clone();
             let mini = mini_weak.clone();
             let text_for_main = text.clone();
