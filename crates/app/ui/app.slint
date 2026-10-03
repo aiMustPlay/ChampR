@@ -85,10 +85,10 @@ export global Tokens {
     out property <length> win-main-h: 1120px;
     out property <length> win-main-min-w: 440px;
     out property <length> win-main-min-h: 860px;
-    out property <length> win-runes-w: 500px;
-    out property <length> win-runes-h: 660px;
-    out property <length> win-runes-min-w: 460px;
-    out property <length> win-runes-min-h: 560px;
+    out property <length> win-runes-w: 620px;
+    out property <length> win-runes-h: 1020px;
+    out property <length> win-runes-min-w: 520px;
+    out property <length> win-runes-min-h: 640px;
     out property <length> win-settings-w: 480px;
     out property <length> win-settings-h: 830px;
     out property <length> win-settings-min-w: 420px;
@@ -834,12 +834,17 @@ export component RunesWindow inherits Window {
     // 手动点选对位英雄 id(敌方已锁)
     callback counter-pick-opponent(int);
 
-    VerticalBox {
-        padding: Tokens.s-lg;
-        spacing: Tokens.s-md;
+    // 整页可滚: 排面 + 英雄头 + 操作 + counter/对位心理/心战三卡 + 符文列表,
+    // 内容会随数据长高, 固定高度窗口必然截断(2026-10-02 用户反馈窗口太小)。
+    ScrollView {
+        viewport-width: self.width;
 
-        // 选人排面(我方/敌方 1~5楼 分路 英雄)
-        if root.roster-my != "" : Rectangle {
+        VerticalBox {
+            padding: Tokens.s-lg;
+            spacing: Tokens.s-md;
+
+            // 选人排面(我方/敌方 1~5楼 分路 英雄)
+            if root.roster-my != "" : Rectangle {
             background: Tokens.c-dark-card;
             border-radius: Tokens.radius;
             border-width: Tokens.border-hair;
@@ -1105,7 +1110,8 @@ export component RunesWindow inherits Window {
             color: Tokens.c-err;
         }
 
-        if root.rune-status == "success" : ListView {
+        if root.rune-status == "success" : VerticalLayout {
+            spacing: Tokens.s-xs;
             for rune[index] in root.runes : Rectangle {
                 border-width: Tokens.border-hair;
                 border-color: Tokens.c-dark-border;
@@ -1181,6 +1187,7 @@ export component RunesWindow inherits Window {
                     root.close-requested();
                 }
             }
+        }
         }
     }
 }
