@@ -1,4 +1,16 @@
-import { VerticalBox, HorizontalBox, ListView, ScrollView, Button, SpinBox, LineEdit, TextEdit, CheckBox, ComboBox } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, ListView, ScrollView, Button, SpinBox, LineEdit, TextEdit, CheckBox, ComboBox, Palette } from "std-widgets.slint";
+
+// 把风格内置的 Palette 再导出, 让 Rust 端能拿到句柄:
+//   Palette.color-scheme 是 in-out 且双向绑到 FluentPalette.color-scheme,
+//   启动时 set_color_scheme(Dark) 就能把 TextEdit/LineEdit/CheckBox/ComboBox
+//   这些不吃 Tokens 的控件一起翻到深色(它们跟随 OS 主题, 只能这样强制)。
+export { Palette } from "std-widgets.slint";
+
+// ---------------------------------------------------------------------------
+//  深色主题: 每个 Window 内声明一份 Palette 覆写, 让 std-widgets 的
+//  TextEdit/LineEdit/CheckBox/ComboBox 也走深底浅字(它们不读 Tokens)。
+//  改主题色时这里和 Tokens 一起改, 四处保持一致。
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 //  Design tokens —— 全局统一尺寸/颜色, 对齐 analysis_and_design/ui-design-system.md
@@ -29,25 +41,29 @@ export global Tokens {
     out property <length> f-aux: 12px;
     out property <length> f-mini: 11px;
 
-    // 状态色(与设计规范的语义一致)
-    out property <color> c-ok: #22aa55;
+    // 状态色(深色底上提高对比)
+    out property <color> c-ok: #3fbf6f;
     out property <color> c-warn: #e6a817;
-    out property <color> c-err: #d64545;
+    out property <color> c-err: #e2604f;
     out property <color> c-muted: #8a94a6;
 
-    // 表面与文字
-    out property <color> c-card: #ffffff;
-    out property <color> c-page: #f5f7fa;
-    out property <color> c-card-border: #e2e8f0;
-    out property <color> c-text: #1f2933;
-    out property <color> c-text-secondary: #666666;
-    out property <color> c-text-faint: #999999;
+    // ---- 统一深金(Hextech)配色 ----
+    // 用户 2026-10-03 拍板: 主窗/设置/符文/迷你全部同一套, 不再分"工具风/游戏风"。
+    // 改配色只改这一段; 窗口内的 TextEdit/CheckBox/ComboBox 由各窗 Palette 覆写
+    // 带进深色(见各 Window 顶部的 Palette 块)。
+    out property <color> c-page: #0e1628;          // 窗口底
+    out property <color> c-card: #16233a;          // 卡片面
+    out property <color> c-card-border: #2a3b55;   // 卡片描边
+    out property <color> c-text: #e8eef6;          // 主文字
+    out property <color> c-text-secondary: #9fb3c8;
+    out property <color> c-text-faint: #6f8299;
+    out property <color> c-gold: #c89b3c;          // 主题强调(Hextech 金)
 
-    // Counter 方案卡强调色
-    out property <color> c-accent-bg: #fffaf0;
-    out property <color> c-accent-border: #f2d5a0;
-    out property <color> c-accent-title: #b06a00;
-    out property <color> c-accent-text: #775500;
+    // Counter/心战类强调卡
+    out property <color> c-accent-bg: #241d10;
+    out property <color> c-accent-border: #6b5527;
+    out property <color> c-accent-title: #d9c78e;
+    out property <color> c-accent-text: #d9c78e;
 
     // 表单行高(Settings 输入行, 比状态行高一点)
     out property <length> row-field: 40px;
@@ -56,20 +72,7 @@ export global Tokens {
     out property <length> border-hair: 1px;
 
     // 补充色
-    out property <color> c-warn-text: #b45309;
-
-    // Hextech 深金 (游戏流程内窗口: 符文窗 / 迷你窗)
-    // 管理态窗口(主窗/设置)保持浅灰工具风——风格跟流程走。
-    // ⚠ dark 窗口内 TextEdit/CheckBox 走系统 Palette 不能改前景色,
-    //   需要有色文字时用 Text 或 "空text CheckBox + Text 标签"。
-    out property <color> c-dark-page: #0e1628;
-    out property <color> c-dark-card: #16233a;
-    out property <color> c-dark-border: #2a3b55;
-    out property <color> c-dark-text: #e8eef6;
-    out property <color> c-dark-secondary: #9fb3c8;
-    out property <color> c-gold: #c89b3c;
-    out property <color> c-dark-accent-bg: #241d10;
-    out property <color> c-dark-accent-text: #d9c78e;
+    out property <color> c-warn-text: #e6a817;
 
     // 布局件固定占位(有意固定, 语义命名)
     out property <length> w-status-label: 120px;
@@ -641,7 +644,7 @@ export component RunesWindow inherits Window {
     min-width: Tokens.win-runes-min-w;
     min-height: Tokens.win-runes-min-h;
     // 选人阶段属游戏流程内: 深金配色, 融入 LoL 氛围
-    background: Tokens.c-dark-page;
+    background: Tokens.c-page;
 
     // --- properties ---
     in-out property <int> champion-id: 0;
@@ -693,7 +696,7 @@ export component RunesWindow inherits Window {
 
             // 选人排面(我方/敌方 1~5楼 分路 英雄)
             if root.roster-my != "" : Rectangle {
-            background: Tokens.c-dark-card;
+            background: Tokens.c-card;
             border-radius: Tokens.radius;
             border-width: Tokens.border-hair;
             border-color: Tokens.c-gold;
@@ -746,7 +749,7 @@ export component RunesWindow inherits Window {
             Text {
                 text: "本局分路: " + (root.position-label != "" ? root.position-label : "未知") + " · 数据源 OP.GG";
                 font-size: Tokens.f-body;
-                color: Tokens.c-dark-text;
+                color: Tokens.c-text;
                 vertical-alignment: center;
             }
         }
@@ -792,7 +795,7 @@ export component RunesWindow inherits Window {
                 Text {
                     text: "锁后自动符文";
                     font-size: Tokens.f-aux;
-                    color: Tokens.c-dark-secondary;
+                    color: Tokens.c-text-secondary;
                     vertical-alignment: center;
                 }
             }
@@ -809,7 +812,7 @@ export component RunesWindow inherits Window {
                 Text {
                     text: "锁后自动出装";
                     font-size: Tokens.f-aux;
-                    color: Tokens.c-dark-secondary;
+                    color: Tokens.c-text-secondary;
                     vertical-alignment: center;
                 }
             }
@@ -818,7 +821,7 @@ export component RunesWindow inherits Window {
         // Counter plan card: summary + reason when available, explicit hint
         // when not (previously the button went gray with no explanation).
         if root.has-champion : Rectangle {
-            background: Tokens.c-dark-accent-bg;
+            background: Tokens.c-accent-bg;
             border-color: Tokens.c-gold;
             border-width: Tokens.border-hair;
             border-radius: Tokens.radius;
@@ -837,7 +840,7 @@ export component RunesWindow inherits Window {
                 if root.counter-available : Text {
                     text: root.counter-summary;
                     font-size: Tokens.f-aux;
-                    color: Tokens.c-dark-accent-text;
+                    color: Tokens.c-accent-text;
                     wrap: word-wrap;
                 }
                 if !root.counter-available : Text {
@@ -862,7 +865,7 @@ export component RunesWindow inherits Window {
                         for name[i] in root.counter-cand-names : Rectangle {
                             height: 26px;
                             width: chip-text.preferred-width + Tokens.s-md * 2;
-                            background: cand-touch.has-hover ? Tokens.c-gold : Tokens.c-dark-card;
+                            background: cand-touch.has-hover ? Tokens.c-gold : Tokens.c-card;
                             border-radius: Tokens.radius;
                             border-color: Tokens.c-gold;
                             border-width: Tokens.border-hair;
@@ -872,7 +875,8 @@ export component RunesWindow inherits Window {
                             chip-text := Text {
                                 text: name;
                                 font-size: Tokens.f-aux;
-                                color: Tokens.c-dark-text;
+                                // hover 时底变金, 字要转深色才看得清
+                                color: cand-touch.has-hover ? Tokens.c-page : Tokens.c-text;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -884,8 +888,8 @@ export component RunesWindow inherits Window {
 
         // 对位心理卡: 意图(他想)+弱点(打他), 立于 counter 符文卡之下
         if root.has-champion && root.opponent-intel != "" : Rectangle {
-            background: Tokens.c-dark-card;
-            border-color: Tokens.c-dark-border;
+            background: Tokens.c-card;
+            border-color: Tokens.c-card-border;
             border-width: Tokens.border-hair;
             border-radius: Tokens.radius;
             horizontal-stretch: 1;
@@ -903,7 +907,7 @@ export component RunesWindow inherits Window {
                 Text {
                     text: root.opponent-intel;
                     font-size: Tokens.f-aux;
-                    color: Tokens.c-dark-text;
+                    color: Tokens.c-text;
                     wrap: word-wrap;
                 }
             }
@@ -911,8 +915,8 @@ export component RunesWindow inherits Window {
 
         // 兵法心战卡: 战略(双方分型) + 敌方心理/连招 + 战术(压力档)
         if root.has-champion && root.war-body != "" : Rectangle {
-            background: Tokens.c-dark-accent-bg;
-            border-color: Tokens.c-dark-border;
+            background: Tokens.c-accent-bg;
+            border-color: Tokens.c-card-border;
             border-width: Tokens.border-hair;
             border-radius: Tokens.radius;
             horizontal-stretch: 1;
@@ -930,7 +934,7 @@ export component RunesWindow inherits Window {
                 Text {
                     text: root.war-body;
                     font-size: Tokens.f-aux;
-                    color: Tokens.c-dark-text;
+                    color: Tokens.c-text;
                     wrap: word-wrap;
                 }
             }
@@ -962,9 +966,9 @@ export component RunesWindow inherits Window {
             spacing: Tokens.s-xs;
             for rune[index] in root.runes : Rectangle {
                 border-width: Tokens.border-hair;
-                border-color: Tokens.c-dark-border;
+                border-color: Tokens.c-card-border;
                 border-radius: Tokens.radius;
-                background: Tokens.c-dark-card;
+                background: Tokens.c-card;
                 height: Tokens.row-rune-item;
 
                 HorizontalBox {
@@ -980,7 +984,7 @@ export component RunesWindow inherits Window {
                             text: rune.name != "" ? rune.name : rune.position;
                             font-size: Tokens.f-body;
                             font-weight: 600;
-                            color: Tokens.c-dark-text;
+                            color: Tokens.c-text;
                             overflow: elide;
                         }
 
@@ -989,19 +993,19 @@ export component RunesWindow inherits Window {
                             Text {
                                 text: "选用: " + rune.pick-count;
                                 font-size: Tokens.f-aux;
-                                color: Tokens.c-dark-secondary;
+                                color: Tokens.c-text-secondary;
                             }
                             Text {
                                 text: "胜率: " + rune.win-rate;
                                 font-size: Tokens.f-aux;
-                                color: Tokens.c-dark-secondary;
+                                color: Tokens.c-text-secondary;
                             }
                         }
 
                         Text {
                             text: rune.position;
                             font-size: Tokens.f-mini;
-                            color: Tokens.c-dark-secondary;
+                            color: Tokens.c-text-secondary;
                         }
                     }
 
@@ -1023,7 +1027,7 @@ export component RunesWindow inherits Window {
             text: root.apply-rune-status;
             font-size: Tokens.f-aux;
             horizontal-alignment: center;
-            color: Tokens.c-dark-secondary;
+            color: Tokens.c-text-secondary;
         }
 
         // Close
@@ -1052,7 +1056,7 @@ export component MiniMatchWindow inherits Window {
     height: Tokens.win-mini-h;
     always-on-top: true;
     // 对局中置顶显示, 与游戏全屏/无边框模式共存: 深金配色不刺眼
-    background: Tokens.c-dark-page;
+    background: Tokens.c-page;
 
     in-out property <string> match-text: "";
     in-out property <string> match-status: "对局中";
@@ -1086,7 +1090,7 @@ export component MiniMatchWindow inherits Window {
             horizontal-stretch: 1;
             vertical-stretch: 1;
             font-size: Tokens.f-aux;
-            color: Tokens.c-dark-text;
+            color: Tokens.c-text;
             wrap: word-wrap;
             vertical-alignment: top;
         }

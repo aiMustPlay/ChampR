@@ -19,31 +19,29 @@
 间距(4 起 8 进): `s-xs:4 s-sm:8 s-md:12 s-lg:16 s-xl:24`
 字型: `f-title:22 f-section:15 f-body:14 f-aux:12 f-mini:11`
 控件: `row-height:32(状态行/按钮最低高) row-field:40(表单行) btn-height:36 icon-btn:28 status-dot:8 radius:8`
-颜色:
-- 语态 `c-ok #22aa55 / c-warn #e6a817 / c-err #d64545 / c-muted #8a94a6`
-- 表面 `c-card #fff / c-page #f5f7fa / c-card-border #e2e8f0`
-- 文字 `c-text #1f2933 / c-text-secondary #666 / c-text-faint #999`
-- 强调(counter 卡, 浅色环境) `c-accent-bg/border/title/text`
-- **Hextech 深金** (游戏流程内窗口): `c-dark-page #0e1628 / c-dark-card #16233a /
-  c-dark-border #2a3b55 / c-dark-text #e8eef6 / c-dark-secondary #9fb3c8 /
-  c-gold #c89b3c / c-dark-accent-bg #241d10 / c-dark-accent-text #d9c78e`
+颜色(**单一深金调色板, 用户 2026-10-03 拍板统一**):
+- 语态 `c-ok #3fbf6f / c-warn #e6a817 / c-err #e2604f / c-muted #8a94a6`
+- 表面 `c-page #0e1628 / c-card #16233a / c-card-border #2a3b55`
+- 文字 `c-text #e8eef6 / c-text-secondary #9fb3c8 / c-text-faint #6f8299`
+- 强调 `c-gold #c89b3c / c-accent-bg #241d10 / c-accent-border #6b5527 /
+  c-accent-title·text #d9c78e`
 
-### 2.1 风格随流程分派(不是全屋同色)
+### 2.1 全屋同色(历史: 曾按流程分派)
 
-| 流程环节 | 窗口 | 配色 |
-| --- | --- | --- |
-| 游戏流程内(选人/锁定) | 符文窗 | Hextech 深金 —— 融入 LoL 氛围, 金色强调 Counter 卡 |
-| 游戏流程内(对局) | 迷你窗 | Hextech 深金 —— 置顶在游戏旁不刺眼 |
-| 管理流程(大厅/空档) | 主窗 / 设置窗 | 浅灰工具风 —— 像系统配置工具, 不搞游戏感 |
+2026-10-03 前分两派: 游戏流程内窗口(符文/迷你)Hextech 深金, 管理态窗口(主窗/设置)
+浅灰工具风。用户拍板统一为深金, 理由是半深半浅在切窗时观感断裂; `c-dark-*` 那套
+别名随之并入通用名(c-page/c-card/...), 只剩一套 Tokens。
 
-依据: 游戏 UI 通行风格(LoL hextech 深蓝金 / Blitz 深灰蓝 / Riot 系列都是深色+
-单强调色), 但助手工具一旦脱离游戏就该退出游戏腔调。分界=窗口的"使用场合"而不是
-全局 toggle, 这是"UI 契合使用流程"的具体化。
+| 窗口 | 配色 |
+| --- | --- |
+| 主窗 / 设置窗 / 符文窗 / 迷你窗 | 同一套 Hextech 深金(Tokens) |
 
-⚠ 实现约束: Slint 的 `TextEdit`/`CheckBox` 标签等走系统 `Palette` 无法按窗改前景色——
-深色窗内需要文字时, 用 `Text`(支持 color)或"空 text CheckBox + 外部 Text 标签"模式,
-按钮保持系统样式(深底+系统按钮是桌面深色工具的常见混合态)。
-窗口尺寸: `win-main 520×1120 (min 440×860) / win-runes 500×660 (min 460×560) / win-settings 480×760 (min 420×600)`
+实现要点: Tokens 只管我们自绘的部分; Slint 的 `TextEdit`/`LineEdit`/`CheckBox`/
+`ComboBox` 跟随操作系统主题, 靠 **Rust 端 `Palette.color-scheme = Dark`** 强制翻转
+(app.slint 里 `export { Palette } from "std-widgets.slint";` 拿到句柄;
+该属性与风格内部 `FluentPalette.color-scheme` 双向绑定, 赋值后会解掉与系统主题的绑定)。
+写 `Palette { ... }` 元素或同名 `global Palette` 都无效(前者编译报错, 后者 widgets 不读)。
+窗口尺寸: `win-main 520×1120 (min 440×860) / win-runes 620×1020 (min 520×640) / win-settings 480×830 (min 420×600)`
 
 修改样式**只改 Tokens**。新需求需要新尺寸时先进 Tokens, 再给语义名。
 

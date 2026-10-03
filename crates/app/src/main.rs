@@ -1019,6 +1019,20 @@ fn main() {
     });
 
     // -- Show sources window and run event loop --
+    // 统一深色(用户 2026-10-03 拍板): Tokens 只管我们自绘的部分,
+    // TextEdit/LineEdit/CheckBox/ComboBox 跟随 OS 主题, 只能从 Rust 强制翻转
+    // (Palette.color-scheme 与风格内部 FluentPalette.color-scheme 双向绑定)。
+    // 赋值会解掉它到系统主题的绑定, 因此之后系统换主题也不会把我们带回浅色。
+    let dark = slint::language::ColorScheme::Dark;
+    sources_window
+        .global::<Palette>()
+        .set_color_scheme(dark);
+    tts_settings_window
+        .global::<Palette>()
+        .set_color_scheme(dark);
+    runes_window.global::<Palette>().set_color_scheme(dark);
+    mini_window.global::<Palette>().set_color_scheme(dark);
+
     // 构建戳: 一眼看出跑的是哪一版(排查"改了没生效")
     let build_stamp = format!(
         "{}{}",
