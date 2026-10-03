@@ -136,6 +136,8 @@ export component SourcesWindow inherits Window {
     in-out property <bool> mini-live-enabled: true;
     // 输出区当前 Tab: 0 = 对局数据, 1 = 大师对话(谁刚输出谁上前台)
     in-out property <int> output-tab: 0;
+    // 构建戳(git 短 hash + 是否有未提交改动), 由 Rust 启动时注入
+    in-out property <string> build-stamp: "";
 
     callback launch-lol-clicked();
     callback open-tts-settings-clicked();
@@ -311,6 +313,14 @@ export component SourcesWindow inherits Window {
                     color: Tokens.c-muted;
                 }
             }
+        }
+
+        // 构建戳: 一眼确认跑的是哪一版(排查"改了没生效"用)
+        Text {
+            text: "构建 " + root.build-stamp;
+            font-size: Tokens.f-mini;
+            color: Tokens.c-text-faint;
+            horizontal-alignment: center;
         }
 
     }

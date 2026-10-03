@@ -1060,6 +1060,14 @@ fn main() {
     });
 
     // -- Show sources window and run event loop --
+    // 构建戳: 一眼看出跑的是哪一版(排查"改了没生效")
+    let build_stamp = format!(
+        "{}{}",
+        option_env!("CHAMPR_BUILD_HASH").unwrap_or("unknown"),
+        option_env!("CHAMPR_BUILD_DIRTY").unwrap_or("")
+    );
+    sources_window.set_build_stamp(SharedString::from(&build_stamp));
+    info!("ChampR build {build_stamp}");
     sources_window.show().unwrap();
     // 手动固定的显示器(在 show 之后才有 size())
     pin_window_to_monitor(sources_window.window(), &state, PinAnchor::Center);
