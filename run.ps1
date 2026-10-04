@@ -236,7 +236,9 @@ function Start-App {
 
     Initialize-MsvcEnvironment
     Write-Step 'Starting the desktop client'
-    & cargo run -p champr
+    # 明确 --bin: 本 crate 还有 ui_preview 第二个 bin, 不指定会让 cargo 直接拒绝
+    # 运行并 exit 101(2026-10-04 全量启动失败事故)。Cargo.toml 里也写了 default-run。
+    & cargo run -p champr --bin champr
     if ($LASTEXITCODE -ne 0) {
         throw ("cargo run -p champr failed with exit code {0}" -f $LASTEXITCODE)
     }

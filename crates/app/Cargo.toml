@@ -3,6 +3,10 @@ name = "champr"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
+# 这个 crate 有第二个 bin(src/bin/ui_preview.rs 无头 UI 预览), 不指定 default-run
+# 的话 `cargo run -p champr`(启动器用的命令)会直接报
+# "could not determine which binary to run" 并以 101 退出 —— 2026-10-04 全量启动失败事故。
+default-run = "champr"
 
 [dependencies]
 lcu = { path = "../lcu" }

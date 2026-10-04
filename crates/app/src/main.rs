@@ -1161,28 +1161,45 @@ fn setup_tray(main_weak: Weak<SourcesWindow>) {
 // ---------------------------------------------------------------------------
 
 async fn fetch_sources_task(sources_weak: Weak<SourcesWindow>, state: SharedState) {
-    match web::fetch_champion_list().await {
-        Ok(champions_map) => {
-            // Store champions map in shared state
-            {
-                let mut s = state.lock().unwrap();
-                s.champions_map = champions_map;
+    // 启动器现在是"服务端与 app 并发拉起"(不再等端口), 所以后端可能比我们晚就绪。
+    // 没有这层重试的话, 冠军表拉取失败会让中文名/counter/排面全线降级(2026-10-04)。
+    let mut attempt: u32 = 0;
+    const MAX_ATTEMPTS: u32 = 40; // 3s * 40 ≈ 2 分钟
+    loop {
+        attempt += 1;
+        match web::fetch_champion_list().await {
+            Ok(champions_map) => {
+                let count = champions_map.len();
+                {
+                    let mut s = state.lock().unwrap();
+                    s.champions_map = champions_map;
+                }
+                info!("champion list loaded: {count} champions (attempt {attempt})");
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = sources_weak.upgrade() {
+                        win.set_status(SharedString::from("success"));
+                    }
+                });
+                return;
             }
-
-            slint::invoke_from_event_loop(move || {
-                if let Some(win) = sources_weak.upgrade() {
-                    win.set_status(SharedString::from("success"));
+            Err(err) => {
+                // 第 1 次和之后每 5 次写一行, 免得 3 秒一条刷屏
+                if attempt == 1 || attempt % 5 == 0 {
+                    warn!(
+                        "champion list fetch failed (attempt {attempt}/{MAX_ATTEMPTS}): {err:?} — 后端可能还没起来, 3s 后重试"
+                    );
                 }
-            })
-            .unwrap();
-        }
-        Err(_) => {
-            slint::invoke_from_event_loop(move || {
-                if let Some(win) = sources_weak.upgrade() {
-                    win.set_status(SharedString::from("error"));
+                if attempt >= MAX_ATTEMPTS {
+                    warn!("champion list unavailable after {MAX_ATTEMPTS} attempts; 数据源相关功能将降级");
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(win) = sources_weak.upgrade() {
+                            win.set_status(SharedString::from("error"));
+                        }
+                    });
+                    return;
                 }
-            })
-            .unwrap();
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
         }
     }
 }
@@ -3068,36 +3085,52 @@ const FRAME_W: i32 = 20;
 
 /// 选目标显示器并把窗口**完整**放进工作区(尺寸超了就按比例缩, 位置再纠偏)。
 ///
-/// 2026-10-03 事故链: 夹紧只在"固定显示器"分支里跑 → 默认不夹 → 840×1360 被
-/// Windows 摆到屏外; 补了夹紧又发现尺寸未定(0)时居中会把屏幕中心当左上角;
-/// 最后发现外框没算进去, 底部仍差一点。三处都在这里一并处理。
+/// 2026-10-04 事故: Tokens 里的窗口尺寸是**逻辑像素**, 而工作区与窗口 size()
+/// 是物理像素。150% 缩放下 840×1360 逻辑 → 1245×2015 物理, 比 1440 高的屏幕还大
+/// 1.4 倍 —— 用户看到的就是"什么都看不见"。所以这里统一在逻辑坐标系里夹紧:
+///   scale = window.scale_factor(); 逻辑工作区 = 物理工作区 / scale
 fn place_window_in_work_area(window: &slint::Window, m: &monitors::Monitor, anchor: PinAnchor) {
     let (l, t, r, b) = m.work_rect;
-    let avail_w = ((r - l) - FRAME_W - 16).max(320);
-    let avail_h = ((b - t) - FRAME_H - 16).max(240);
+    let scale = window.scale_factor() as f64; // 每显示器 DPI, 1.0 / 1.25 / 1.5 ...
+    let frame_w = (FRAME_W as f64 / 1.0).max(16.0);
+    let frame_h = (FRAME_H as f64 / 1.0).max(32.0);
+    // 逻辑坐标系下的可用区(扣掉外框与一点边距)
+    let avail_w = (((r - l) as f64 / scale) - frame_w - 16.0).max(320.0);
+    let avail_h = (((b - t) as f64 / scale) - frame_h - 16.0).max(240.0);
 
-    let size = window.size(); // 客户区; show() 后才有意义
-    let (mut w, mut h) = (size.width as i32, size.height as i32);
-    if w <= 1 || h <= 1 {
+    let size = window.size(); // 物理像素
+    let (phys_w, phys_h) = (size.width as f64, size.height as f64);
+    if phys_w <= 1.0 || phys_h <= 1.0 {
         // 尺寸还没定: 摆了也是错的位置, 交给调用方的延迟补摆
         return;
     }
-    if w > avail_w || h > avail_h {
-        let scale = f64::min(avail_w as f64 / w as f64, avail_h as f64 / h as f64);
-        w = ((w as f64 * scale) as i32).max(320);
-        h = ((h as f64 * scale) as i32).max(240);
-        warn!("window {size:?} exceeds work area; resized to {w}x{h}");
-        window.set_size(slint::PhysicalSize::new(w as u32, h as u32));
+    let mut w_log = phys_w / scale;
+    let mut h_log = phys_h / scale;
+
+    if w_log > avail_w || h_log > avail_h {
+        let k = f64::min(avail_w / w_log, avail_h / h_log);
+        w_log = (w_log * k).max(320.0);
+        h_log = (h_log * k).max(240.0);
+        warn!(
+            "window {:.0}x{:.0} logical (scale {scale}) exceeds logical work area {:.0}x{:.0}; resized to {:.0}x{:.0}",
+            phys_w / scale, phys_h / scale, avail_w, avail_h, w_log, h_log
+        );
+        window.set_size(slint::PhysicalSize::new(
+            (w_log * scale).round() as u32,
+            (h_log * scale).round() as u32,
+        ));
     }
 
-    // 位置范围按"外框"算, 保证标题栏和底边都在屏内
-    let max_x = (r - w - FRAME_W).max(l);
-    let max_y = (b - h - FRAME_H).max(t);
+    // 位置: 用缩放后的物理尺寸, 并让外框完整落在工作区内
+    let phys_w = (w_log * scale).round() as i32;
+    let phys_h = (h_log * scale).round() as i32;
+    let max_x = (r - phys_w - FRAME_W).max(l);
+    let max_y = (b - phys_h - FRAME_H).max(t);
     let (x, y) = match anchor {
         PinAnchor::TopRight => (max_x - 12, t + 8),
         PinAnchor::Center => (
-            (l + r).div_euclid(2) - w.div_euclid(2),
-            (t + b).div_euclid(2) - h.div_euclid(2),
+            (l + r).div_euclid(2) - phys_w.div_euclid(2),
+            (t + b).div_euclid(2) - phys_h.div_euclid(2),
         ),
     };
     window.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(

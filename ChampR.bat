@@ -20,6 +20,11 @@ if not errorlevel 1 (
   timeout /t 2 >nul
 )
 start "ChampR Server" powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 server
-rem Wait for the backend port (max 90s). No server = runes and counter stay silent.
-powershell -NoProfile -Command "$deadline = (Get-Date).AddSeconds(90); while ((Get-Date) -lt $deadline) { if (Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction SilentlyContinue) { exit 0 }; Start-Sleep -Milliseconds 500 }"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 app
+rem Launch the app in its own window and exit immediately. The old flow waited up
+rem to 90s for port 3030 inside THIS console; closing the console during that wait
+rem killed the launcher before the app step ran, which looked exactly like "the app
+rem does nothing" (2026-10-04 forensics: server up, no cargo run -p champr). Nothing
+rem here is load-bearing now: the app retries its champion-list fetch until the
+rem backend answers, so a slow server is fine.
+start "ChampR" powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 app
+exit /b 0

@@ -31,6 +31,11 @@ fn main() {
         println!("cargo:rustc-env=CHAMPR_BUILD_DIRTY=");
     }
 
-    // HEAD 变动就重编, 让戳保持真实
+    // HEAD 变动就重编, 让戳保持真实。
+    // 注意: .git/HEAD 的内容永远是 "ref: refs/heads/main", 提交时并不变 ——
+    // 只监听它会让戳永远停在第一次的 hash(2026-10-04 实际踩到: 跑的是新代码,
+    // 底部却显示旧 hash)。所以同时监听分支引用与 index。
     println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/refs/heads/main");
+    println!("cargo:rerun-if-changed=../../.git/index");
 }
