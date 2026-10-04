@@ -234,19 +234,38 @@ function Start-App {
             Write-Step 'Installing Node dependencies (pnpm install)'
             Invoke-Pnpm -PnpmArgs @('install')
         }
-        Write-Step 'Building the DeepSeek Web sidecar'
-        Invoke-Pnpm -PnpmArgs @('--dir', 'packages/deepseek-web', 'build')
+        # Rebuild the sidecar only when sources are newer than the output: running tsc
+        # on every launch wasted 10-30s and looked like "double-click does nothing".
+        $webDist = 'packages\deepseek-web\dist'
+        $webSrc = 'packages\deepseek-web\src'
+        $needsWeb = -not (Test-Path $webDist)
+        if (-not $needsWeb -and (Test-Path $webSrc)) {
+            $newestSrc = Get-ChildItem $webSrc -Recurse -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($newestSrc -and $newestSrc.LastWriteTime -gt (Get-Item $webDist).LastWriteTime) {
+                $needsWeb = $true
+            }
+        }
+        if ($needsWeb) {
+            Write-Step 'Building the DeepSeek Web sidecar'
+            Invoke-Pnpm -PnpmArgs @('--dir', 'packages/deepseek-web', 'build')
+        }
+        else {
+            Write-Step 'DeepSeek Web sidecar is up to date, skipping build'
+        }
     }
     finally {
         Pop-Location
     }
 
     Initialize-MsvcEnvironment
-    # --offline 是硬性要求: 在线时 cargo 会去更新 registry index, 网络不通(代理没开)会
-    # 长时间挂住, 同时**霸占 target 构建锁** —— 之后任何启动都卡在
-    # "Blocking waiting for file lock on build directory", 表现就是双击后什么都没有
-    # (2026-10-04 实际事故)。离线构建依赖已全部在本地缓存, 秒级完成;
-    # 若真新增了依赖, 这里会明确报错而不是静默挂死。
+    # --offline is mandatory: online, cargo refreshes the registry index, and when the
+    # network is down (proxy off) it hangs for a long time while HOLDING the target build
+    # lock - after which every launch blocks on "Blocking waiting for file lock on build
+    # directory", which looks exactly like "double-click and nothing happens"
+    # (real incident 2026-10-04). Offline builds use the local cache and take seconds;
+    # a genuinely new dependency now fails loudly instead of hanging silently.
+    # Keep comments ASCII here: PS 5.1 reads a BOM-less .ps1 as ANSI and CJK can break it.
     Write-Step 'Building the desktop client (offline)'
     & cargo build --offline -p champr --bin champr
     if ($LASTEXITCODE -ne 0) {
@@ -255,9 +274,27 @@ function Start-App {
     # 直接跑二进制而不是 cargo run: cargo run 会作为父进程常驻, 也多一层"哪个 bin"的坑
     $appExe = Join-Path $RepoRoot 'target\debug\champr.exe'
     Write-Step "Starting $appExe"
+    $appLog = Join-Path $RepoRoot '.cache\champr.log'
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     & $appExe
-    if ($LASTEXITCODE -ne 0) {
-        throw ("champr exited with code {0}" -f $LASTEXITCODE)
+    $appCode = $LASTEXITCODE
+    $stopwatch.Stop()
+
+    # Fast exit = something is wrong (a normal session never ends in 5s). Print the
+    # tail of the app log and keep the console open, so the user never gets a window
+    # that just flashes and vanishes with no explanation (repeated report 2026-10-04).
+    if ($stopwatch.Elapsed.TotalSeconds -lt 5) {
+        Write-Step ("champr exited after {0:N1}s with code {1}" -f $stopwatch.Elapsed.TotalSeconds, $appCode)
+        if (Test-Path $appLog) {
+            Write-Step "Last lines of $appLog :"
+            Get-Content $appLog -Tail 25 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+        }
+        Write-Step 'Window will stay open for 30s so you can read this.'
+        Start-Sleep -Seconds 30
+    }
+
+    if ($appCode -ne 0) {
+        throw ("champr exited with code {0} (log: {1})" -f $appCode, $appLog)
     }
 }
 

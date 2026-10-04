@@ -937,6 +937,7 @@ dependencies = [
  "image 0.25.2",
  "kv-log-macro",
  "lcu",
+ "log",
  "serde",
  "slint",
  "slint-build",

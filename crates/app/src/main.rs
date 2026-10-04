@@ -248,8 +248,75 @@ type SharedState = Arc<Mutex<AppState>>;
 //  main
 // ---------------------------------------------------------------------------
 
+/// 日志同时写控制台与文件。
+///
+/// 起因(2026-10-04): 控制台窗口一关(或 app 退出后启动器窗口消失), 日志就没了,
+/// "启动后什么都没有"变成无法复盘的悬案 —— 已发生两次。落盘后任何异常都留痕。
+struct TeeLogger {
+    /// 文件句柄; None = 落盘失败(只打控制台)
+    file: Option<std::sync::Mutex<std::fs::File>>,
+}
+
+impl log::Log for TeeLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        // 控制台: 保留 femme 风格的 "target 消息", 便于对照历史日志
+        eprintln!("{} {}", record.target(), record.args());
+        if let Some(file) = &self.file {
+            if let Ok(mut file) = file.lock() {
+                use std::io::Write;
+                let _ = writeln!(
+                    file,
+                    "{:>5} {} {}",
+                    record.level(),
+                    record.target(),
+                    record.args()
+                );
+                let _ = file.flush();
+            }
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+/// 日志初始化: 控制台 + `.cache/champr.log`(>2MB 轮转一次), 并挂 panic 钩子。
+fn init_logging() {
+    let path = std::path::Path::new(".cache/champr.log");
+    let _ = std::fs::create_dir_all(".cache");
+    // 简单轮转: 上一份留成 champr.log.1
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > 2 * 1024 * 1024 {
+            let _ = std::fs::rename(path, ".cache/champr.log.1");
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+        .map(std::sync::Mutex::new);
+
+    log::set_max_level(log::LevelFilter::Info);
+    let _ = log::set_boxed_logger(Box::new(TeeLogger { file }));
+
+    // panic 也要留痕: 默认只在 stderr 打, 控制台关了就没证据
+    std::panic::set_hook(Box::new(|info| {
+        let text = format!("PANIC: {info}");
+        log::error!("{text}");
+        eprintln!("{text}");
+    }));
+}
+
 fn main() {
-    femme::with_level(femme::LevelFilter::Info);
+    init_logging();
+    info!("=== ChampR starting (pid {}) ===", std::process::id());
 
     // -- Create windows --
     // 符文窗已并入主窗(用户 2026-10-04 拍板): 符文面板现在是主窗的「符文」Tab,
