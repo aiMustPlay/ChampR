@@ -93,9 +93,8 @@ struct AppState {
     /// 手动切台后 UI_TAB_MANUAL_HOLD 内不被"谁输出谁上前台"抢走 ——
     /// 用户正在读大师回答时, 2.5s 一次的对局快照不许把它顶掉。
     ui_tab_manual_at: Option<std::time::Instant>,
-    /// User closed the runes window during this champ-select; do not re-open
-    /// it automatically until a new session starts.
-    runes_window_dismissed: bool,
+    /// 符文对比卡内容(我方 vs 对位符文特性 + 扬长避短), 由对局轮询计算。
+    rune_compare: Option<(String, String)>,
     /// TTS voice configuration used by the advice loop.
     tts_config: tts::TtsConfig,
     /// User-configurable LoL launcher path.
@@ -170,7 +169,7 @@ impl Default for AppState {
             counter_plan: None,
     manual_counter_target: None,
     ui_tab_manual_at: None,
-            runes_window_dismissed: false,
+    rune_compare: None,
             tts_config: tts::TtsConfig::default(),
             lol_launcher_path: r"C:\WeGameApps\英雄联盟（含经典模式）\WeGameLauncher\launcher.exe".to_string(),
             deepseek_config: DeepSeekConfig {
@@ -256,8 +255,9 @@ fn main() {
     femme::with_level(femme::LevelFilter::Info);
 
     // -- Create windows --
+    // 符文窗已并入主窗(用户 2026-10-04 拍板): 符文面板现在是主窗的「符文」Tab,
+    // 所有 runes_* 弱引用都指向主窗(sources_window), 变量名保留以压小改动面。
     let sources_window = SourcesWindow::new().unwrap();
-    let runes_window = RunesWindow::new().unwrap();
     let tts_settings_window = TtsSettingsWindow::new().unwrap();
     let mini_window = MiniMatchWindow::new().unwrap();
 
@@ -349,8 +349,8 @@ fn main() {
     tts_settings_window.set_openai_base_url(SharedString::from(&saved_settings.openai_base_url));
     tts_settings_window.set_openai_model(SharedString::from(&saved_settings.openai_model));
     tts_settings_window.set_openai_api_key(SharedString::from(&saved_settings.openai_api_key));
-    runes_window.set_auto_apply_enabled(saved_settings.auto_apply_rune);
-    runes_window.set_auto_builds_enabled(saved_settings.auto_apply_builds);
+    sources_window.set_auto_apply_enabled(saved_settings.auto_apply_rune);
+    sources_window.set_auto_builds_enabled(saved_settings.auto_apply_builds);
     tts_settings_window.set_auto_accept_match(saved_settings.auto_accept_match);
     sources_window.set_reminder_tier(saved_settings.reminder_tier);
     sources_window.set_mini_live_enabled(saved_settings.mini_live_window);
@@ -675,23 +675,11 @@ fn main() {
         }
     });
 
-    // -- Runes window: close (marks this session as user-dismissed) --
-    let runes_weak = runes_window.as_weak();
-    runes_window.on_close_requested({
-        let state_dismiss = state.clone();
-        move || {
-            state_dismiss.lock().unwrap().runes_window_dismissed = true;
-            if let Some(win) = runes_weak.upgrade() {
-                win.hide().unwrap();
-            }
-        }
-    });
-
-    // -- Runes window: apply rune --
-    let runes_weak = runes_window.as_weak();
+    // -- Runes panel: 选择符文后应用(原符文窗按钮, 现属主窗「符文」Tab) --
+    let runes_weak = sources_window.as_weak();
     let state_c = state.clone();
     let handle_c = rt_handle_ref.clone();
-    runes_window.on_apply_rune_clicked({
+    sources_window.on_apply_rune_clicked({
         move |rune_idx| {
             let s = state_c.lock().unwrap();
             let auth = s.auth_url.clone();
@@ -730,10 +718,10 @@ fn main() {
     });
 
     // -- Runes window: one-click best rune for the current lane --
-    let runes_best_weak = runes_window.as_weak();
+    let runes_best_weak = sources_window.as_weak();
     let state_best = state.clone();
     let handle_best = rt_handle_ref.clone();
-    runes_window.on_apply_best_rune_clicked({
+    sources_window.on_apply_best_rune_clicked({
         move || {
             let (auth, champion_id, position) = {
                 let s = state_best.lock().unwrap();
@@ -765,10 +753,10 @@ fn main() {
     });
 
     // -- Runes window: one-click counter-rule rune page --
-    let runes_counter_weak = runes_window.as_weak();
+    let runes_counter_weak = sources_window.as_weak();
     let state_counter = state.clone();
     let handle_counter = rt_handle_ref.clone();
-    runes_window.on_apply_counter_rune_clicked({
+    sources_window.on_apply_counter_rune_clicked({
         move || {
             let (auth, plan) = {
                 let s = state_counter.lock().unwrap();
@@ -798,10 +786,10 @@ fn main() {
 
     // -- Runes window: 手动点选对位(用户指定"我这局打谁") --
     // 自动识别履带失效(敌方分路隐藏/盲选)时的人工兜底。
-    let runes_pick_weak = runes_window.as_weak();
+    let runes_pick_weak = sources_window.as_weak();
     let state_pick = state.clone();
     let handle_pick = rt_handle_ref.clone();
-    runes_window.on_counter_pick_opponent(move |enemy_cid| {
+    sources_window.on_counter_pick_opponent(move |enemy_cid| {
         let (auth, me) = {
             let mut s = state_pick.lock().unwrap();
             if s.current_champion_id == 0 {
@@ -882,7 +870,7 @@ fn main() {
 
     // -- Runes window: auto-apply toggle (persisted) --
     let state_auto = state.clone();
-    runes_window.on_auto_apply_toggled(move |enabled| {
+    sources_window.on_auto_apply_toggled(move |enabled| {
         state_auto.lock().unwrap().auto_apply_rune = enabled;
         let mut settings = settings::Settings::load();
         settings.auto_apply_rune = enabled;
@@ -891,7 +879,7 @@ fn main() {
 
     // -- Runes window: auto-builds toggle (persisted) --
     let state_auto_builds = state.clone();
-    runes_window.on_auto_builds_toggled(move |enabled| {
+    sources_window.on_auto_builds_toggled(move |enabled| {
         state_auto_builds.lock().unwrap().auto_apply_builds = enabled;
         let mut settings = settings::Settings::load();
         settings.auto_apply_builds = enabled;
@@ -932,7 +920,7 @@ fn main() {
     let state_c2 = state.clone();
     rt_handle.spawn(fetch_sources_task(sources_weak2, state_c2));
 
-    let runes_weak2 = runes_window.as_weak();
+    let runes_weak2 = sources_window.as_weak();
     let sources_weak3 = sources_window.as_weak();
     let state_c3 = state.clone();
     rt_handle.spawn(lcu_monitor_task(sources_weak3, runes_weak2, state_c3));
@@ -1030,7 +1018,7 @@ fn main() {
     tts_settings_window
         .global::<Palette>()
         .set_color_scheme(dark);
-    runes_window.global::<Palette>().set_color_scheme(dark);
+    sources_window.global::<Palette>().set_color_scheme(dark);
     mini_window.global::<Palette>().set_color_scheme(dark);
 
     // 构建戳: 一眼看出跑的是哪一版(排查"改了没生效")
@@ -1210,7 +1198,7 @@ async fn fetch_sources_task(sources_weak: Weak<SourcesWindow>, state: SharedStat
 
 async fn lcu_monitor_task(
     sources_weak: Weak<SourcesWindow>,
-    runes_weak: Weak<RunesWindow>,
+    runes_weak: Weak<SourcesWindow>,
     state: SharedState,
 ) {
     let mut current_auth_url = String::new();
@@ -1242,7 +1230,6 @@ async fn lcu_monitor_task(
                     s.last_auto_applied_champion = 0;
                     s.last_applied_plan_sig.clear();
                     s.counter_plan = None;
-                    s.runes_window_dismissed = false;
                 }
 
                 let sw = sources_weak.clone();
@@ -1252,10 +1239,11 @@ async fn lcu_monitor_task(
                         win.set_lcu_status(SharedString::from("disconnected"));
                         win.set_lcu_summoner(SharedString::from(""));
                     }
+                    // 符文面板现在就在主窗里: 清数据即可, 不再 hide 一个独立窗口
+                    // (对主窗调用 hide() 会把整个界面藏起来 —— 2026-10-04 合并时特别注意)
                     if let Some(win) = rw.upgrade() {
                         win.set_has_champion(false);
                         win.set_champion_id(0);
-                        win.hide().unwrap();
                     }
                 });
             }
@@ -1433,14 +1421,12 @@ async fn lcu_monitor_task(
                                             s.last_auto_applied_champion = 0;
                                             s.last_applied_plan_sig.clear();
                                             s.counter_plan = None;
-                                            s.runes_window_dismissed = false;
                                         }
                                         let rw = runes_weak.clone();
                                         let _ = slint::invoke_from_event_loop(move || {
                                             if let Some(win) = rw.upgrade() {
                                                 win.set_has_champion(false);
                                                 win.set_champion_id(0);
-                                                win.hide().unwrap();
                                             }
                                         });
                                     }
@@ -1725,9 +1711,10 @@ fn coach_message_display(role: &str, content: &str) -> String {
     }
 }
 
-/// 主窗输出区 Tab: 0 = 对局数据(2.5s 覆盖快照), 1 = 大师对话(追加流)。
-const UI_TAB_MATCH: i32 = 0;
-const UI_TAB_COACH: i32 = 1;
+/// 主窗内容区 Tab: 0 = 符文(选人/符文), 1 = 对局数据(2.5s 覆盖快照), 2 = 大师对话(追加流)。
+const UI_TAB_RUNES: i32 = 0;
+const UI_TAB_MATCH: i32 = 1;
+const UI_TAB_COACH: i32 = 2;
 /// 手动切台后的静默期: 期间谁输出都不抢台。
 const UI_TAB_MANUAL_HOLD: Duration = Duration::from_secs(45);
 
@@ -2367,6 +2354,23 @@ async fn objective_reminder_task(weak: Weak<SourcesWindow>, state: SharedState) 
             continue;
         };
 
+        // ---- 符文对比卡(用户 2026-10-04 诉求): 我方 vs 对方符文特性 + 扬长避短 ----
+        // 对手符文只有对局内 Live Client Data 才公开(基石 + 主/副系), 因此这里算;
+        // 选人阶段此卡为空, 由 counter 卡承担"对位建议"。
+        if let Some((header, body)) = compute_rune_compare(&snapshot, &static_names) {
+            {
+                let mut s = state.lock().unwrap();
+                s.rune_compare = Some((header.clone(), body.clone()));
+            }
+            let weak_compare = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(win) = weak_compare.upgrade() {
+                    win.set_rune_compare_header(SharedString::from(header));
+                    win.set_rune_compare_body(SharedString::from(body));
+                }
+            });
+        }
+
         for reminder in engine.collect(&snapshot, &champions_map, &static_names) {
             // Tier 1 keeps only key events (first blood / dragons / baron).
             if tier == 1 && reminder.kind != advisor::ReminderKind::EventKey {
@@ -2883,9 +2887,79 @@ fn compute_war_text(
     Some(lcu::war::render_ui(&card))
 }
 
-/// Apply a counter-rule rune plan produced by the local rule engine.
+/// 符文对比卡: 我方(完整页) vs 对方(基石+主副系) → 特性描述 + 扬长避短提醒。
+///
+/// 数据来源: 对局内 Live Client Data。我方用 active 玩家的 fullRunes(含属性碎片),
+/// 对方只有 keystone + 主/副系(游戏只公开这些), 所以按"风格配对"给建议。
+fn compute_rune_compare(
+    snapshot: &lcu::match_context::LiveSnapshot,
+    names: &lcu::web::StaticNames,
+) -> Option<(String, String)> {
+    let me = snapshot.local_player()?;
+    let opponent = snapshot.lane_opponent()?;
+    if me.champion_name.is_empty() || opponent.champion_name.is_empty() {
+        return None;
+    }
+
+    let my_key = names.rune(me.keystone_id, &me.keystone_name);
+    let my_primary = names.rune(me.primary_tree_id, &me.primary_tree_name);
+    let my_secondary = names.rune(me.secondary_tree_id, &me.secondary_tree_name);
+    let opp_key = names.rune(opponent.keystone_id, &opponent.keystone_name);
+    let opp_primary = names.rune(opponent.primary_tree_id, &opponent.primary_tree_name);
+
+    let my_style = lcu::runetraits::style_of(me.keystone_id, me.primary_tree_id);
+    let opp_style = lcu::runetraits::style_of(opponent.keystone_id, opponent.primary_tree_id);
+
+    // 属性碎片: 只有自己的可见(fullRunes 里 5000 段就是属性碎片)
+    let stat_zh: Vec<String> = snapshot
+        .active
+        .as_ref()
+        .map(|a| {
+            a.full_runes
+                .iter()
+                .filter(|(id, _)| (5000..=5099).contains(id))
+                .map(|(id, fallback)| names.rune(*id, fallback))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let header = format!(
+        "符文对比 · 我({my_key}) vs 对位 {opp_key}({})",
+        lcu::runetraits::style_label(opp_style)
+    );
+
+    let mut body = String::new();
+    body.push_str(&format!(
+        "我方: {} · {}({}) · 主 {} / 副 {}",
+        lcu::runetraits::style_label(my_style),
+        my_key,
+        lcu::runetraits::keystone_trait(me.keystone_id),
+        my_primary,
+        my_secondary
+    ));
+    if !stat_zh.is_empty() {
+        body.push_str(&format!(" · 属性 {}", stat_zh.join("/")));
+    }
+    body.push('\n');
+    body.push_str(&format!(
+        "对方: {} · {}({}) · 主 {} / 副 {}",
+        lcu::runetraits::style_label(opp_style),
+        opp_key,
+        lcu::runetraits::keystone_trait(opponent.keystone_id),
+        opp_primary,
+        lcu::runetraits::tree_trait(opponent.secondary_tree_id)
+    ));
+    body.push('\n');
+    for line in lcu::runetraits::advice(my_style, opp_style) {
+        body.push_str("提醒: ");
+        body.push_str(line);
+        body.push('\n');
+    }
+    Some((header, body.trim_end().to_string()))
+}
+
 async fn apply_counter_rune_plan(
-    runes_weak: Weak<RunesWindow>,
+    runes_weak: Weak<SourcesWindow>,
     auth_url: String,
     plan: lcu::counter::RunePlan,
     status_prefix: &str,
@@ -2917,7 +2991,7 @@ async fn apply_counter_rune_plan(
 }
 
 async fn apply_best_rune_for_position(
-    runes_weak: Weak<RunesWindow>,
+    runes_weak: Weak<SourcesWindow>,
     auth_url: String,
     champion_id: i64,
     assigned_position: String,
@@ -2987,7 +3061,7 @@ async fn auto_write_builds(lol_dir: String, is_tencent: bool, champion_id: i64) 
 // ---------------------------------------------------------------------------
 
 async fn show_champion_runes(
-    runes_weak: Weak<RunesWindow>,
+    runes_weak: Weak<SourcesWindow>,
     state: SharedState,
     auth_url: String,
     champion_id: i64,
@@ -3016,14 +3090,13 @@ async fn show_champion_runes(
         lcu::match_context::position_label(&s.current_assigned_position)
     };
 
-    // 用户手动关过符文窗本次选人就不再自动弹出(尊重显式关闭意图);
-    // 窗口状态仍会更新, 重新打开时就是最新数据。
-    let user_dismissed = { state.lock().unwrap().runes_window_dismissed };
+    // 选人开始 → 自动把主窗内容区切到「符文」Tab(替代原来的"自动弹符文窗")。
+    // 不抢焦点、不新开窗口, 用户手点过 Tab 的静默期内也不抢(见 activate_output_tab)。
+    activate_output_tab(&runes_weak, &state, UI_TAB_RUNES);
 
-    // Update the runes window with champion info
+    // Update the runes panel with champion info
     let weak = runes_weak.clone();
     let champ_name = SharedString::from(&champion_name);
-    let state_pin = state.clone();
 
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(win) = weak.upgrade() {
@@ -3044,11 +3117,6 @@ async fn show_champion_runes(
                     px.height,
                 );
                 win.set_champion_avatar(Image::from_rgba8(buffer));
-            }
-
-            if !user_dismissed {
-                win.show().unwrap();
-                pin_window_to_monitor(win.window(), &state_pin, PinAnchor::Center);
             }
         }
     });
@@ -3171,7 +3239,7 @@ fn pin_window_on_monitor(window: &slint::Window, m: &monitors::Monitor, anchor: 
 /// 递归安全包装: 8s 重试的 tokio::spawn 要求 Future: Send + 'static,
 /// 直接自递归会造成环; 用 BoxFuture 把返回类型定下来。
 fn fetch_and_show_runes(
-    runes_weak: Weak<RunesWindow>,
+    runes_weak: Weak<SourcesWindow>,
     state: SharedState,
     source: String,
     champion_id: i64,
@@ -3187,7 +3255,7 @@ fn fetch_and_show_runes(
 }
 
 async fn fetch_and_show_runes_inner(
-    runes_weak: Weak<RunesWindow>,
+    runes_weak: Weak<SourcesWindow>,
     state: SharedState,
     source: String,
     champion_id: i64,

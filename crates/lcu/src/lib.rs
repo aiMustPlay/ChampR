@@ -10,6 +10,7 @@ pub mod live_client;
 pub mod maohou;
 pub mod counter;
 pub mod match_context;
+pub mod runetraits;
 pub mod source;
 pub mod task;
 pub mod tips;

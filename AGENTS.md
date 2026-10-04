@@ -37,9 +37,11 @@ ChampR 是一个 Windows 英雄联盟助手：
 - `src/settings.rs`
   - 本地设置持久化
 - `ui/app.slint`
-  - 主窗口
+  - 主窗口(内容区三 Tab: 符文 / 对局数据 / 大师对话)
   - Settings 窗口
-  - Runes 窗口
+  - 迷你窗(对局摘要)
+  - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings|mini]`
+    把窗口用软件渲染器画进 `.cache/ui-preview-*.png`, 布局改动先自检再交付
 
 ### LCU 核心 `crates/lcu`
 
@@ -178,7 +180,11 @@ Rust TTS
   标记注释可整段删除); 用户级 %APPDATA%\champr\war-strategy.toml 拼错即丢弃,
   拼错整个文件回退内置; 选人窗深金心战卡 + 选人/实时 prompt 双注入。设计见
   analysis_and_design/war-of-psychology.md
-- 符文窗口按本局分路排序 + 一键/锁定自动应用 OP.GG 最优符文页
+- 符文面板(2026-10-04 起并入主窗「符文」Tab, 不再单独弹窗)按本局分路排序 +
+  一键/锁定自动应用 OP.GG 最优符文页
+- 符文对比卡(lcu/runetraits.rs, 确定性不依赖 LLM): 对局内拿 Live Client Data 的
+  我方完整页 vs 对方基石+主副系 → 特性(消耗/爆发/续航/耐久/功能)配对 →
+  1~3 句可执行提醒(距离/换血/等关键符文冷却)。对方符文选人期不公开, 故开局才出现
 - 锁定后自动写入推荐出装文件(auto_apply_builds)
 - 事件驱动目标提醒 TTS(一血/小龙/巢虫/先锋/男爵事件 + 刷新前 30s 倒计时), 档位: 全部/仅关键事件/静音
 - 排队就绪自动接受对局(WS 监听 lol-matchmaking/v1/ready-check, InProgress 翻转瞬间 POST
@@ -204,10 +210,11 @@ Rust TTS
 - UI 尺寸/颜色只用 `app.slint` 顶部的 `Tokens` 全局定义，不在组件里写魔法数字
 - 游戏时间隐形原则(第一性, 用户 2026-09-30 拍板): 对局期间零窗口零焦点事件,
   辅助信息只走 TTS 声音; 任何新功能默认不得在 InProgress 阶段显示窗口
-- 窗口生命周期跟随 LCU 阶段: 符文窗仅选人时自动弹; 用户手动关闭当次别再自动弹
-  (runes_window_dismissed, 选人结束/断连时重置); 迷你窗(340×220 置顶)默认关闭,
+- 窗口生命周期跟随 LCU 阶段: 选人开始把主窗内容区**自动切到「符文」Tab**(2026-10-04
+  起符文面板并入主窗, 不再单独弹窗, 也就没有"关掉别重弹"的状态了); 用户手点过 Tab 后
+  45 秒内不自动抢台。迷你窗(340×220 置顶)默认关闭,
   多屏玩家主动勾选后每局进场弹一次到"非游戏屏"(X 关掉不重弹, 离局自动收);
-  不做 overlay 大窗/托盘/自动赛后页(见 analysis_and_design/ui-lifecycle-v2.md 九节)
+  不做 overlay 大窗/自动赛后页(见 analysis_and_design/ui-lifecycle-v2.md 九节)
 - 显示器固定走设置页手动选屏(settings.pinned_monitor, monitors.rs Win32 枚举),
   不做自动跟游戏屏——可解释性优于自动化; 管理窗/符文窗落在指定屏
 - 对局中窗口铁律(用户 2026-09-30 拍板, 游戏必须完整独占一块屏):
@@ -232,6 +239,11 @@ Rust TTS
 9. `scripts/gen-war-cards.mjs` 用心战系统给全英雄起草卡片: 需要 `.env` 内的
    `DEEPSEEK_API_KEY`(gitignore 已排除); 产物在 `output/war-draft/`(草稿+review报告),
    人工核对后 `--merge` 追加内置 TOML, `cargo test -p lcu --lib war::` 负责二次校验。
+10. `crates/app` 有**两个 bin**(`champr` 与 `ui_preview`): `cargo run -p champr` 必须带
+   `--bin champr`(Cargo.toml 已写 `default-run`)。2026-10-04 因为漏了这一步, 启动器
+   里的 `cargo run` 直接 exit 101, 表现是"双击后什么都没有"。
+11. `run.ps1 app` 会先构建 DeepSeek Web sidecar(pnpm), 首次启动较慢属正常; 服务端与
+   客户端由 ChampR.bat 并发拉起, 客户端拉不到冠军表时会每 3s 重试(最多 2 分钟)。
 
 ## 提交规范
 

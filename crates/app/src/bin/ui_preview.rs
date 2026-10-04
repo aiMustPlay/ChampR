@@ -59,7 +59,11 @@ fn main() {
 
     match which.as_str() {
         "runes" => {
-            let ui = RunesWindow::new().unwrap();
+            // 符文面板现已并入主窗: 预览 = 主窗 + 切到「符文」Tab(output-tab = 0)
+            let ui = SourcesWindow::new().unwrap();
+            ui.set_build_stamp(slint::SharedString::from("preview"));
+            ui.set_output_tab(0);
+            ui.set_lcu_status(slint::SharedString::from("connected"));
             ui.set_has_champion(true);
             ui.set_champion_id(74);
             ui.set_champion_name(slint::SharedString::from("大发明家"));
@@ -85,6 +89,10 @@ fn main() {
             ));
             ui.set_war_header(slint::SharedString::from("兵法心战 · 战略: 分推压制"));
             ui.set_war_body(slint::SharedString::from("主计: 围魏救赵 | 战术: 趁虚而入"));
+            ui.set_rune_compare_header(slint::SharedString::from("符文对比 · 我(奥术彗星) vs 对位(余震)"));
+            ui.set_rune_compare_body(slint::SharedString::from(
+                "我方: 巫术系消耗型 · 属性碎片 攻速/适应之力/双抗\n对方: 坚决系耐久型 · 基石余震(控制后双抗爆发)\n提醒: 别让他的控制起手命中; 用射程与技能消耗, 等他余震CD(约 15s)再换血。",
+            ));
             ui.set_rune_status(slint::SharedString::from("success"));
             ui.set_runes(slint::ModelRc::new(slint::VecModel::from(vec![
                 RuneModel {
@@ -106,7 +114,7 @@ fn main() {
                     sub_style_id: 8400,
                 },
             ])));
-            prepare!(ui, get_win_runes_w, get_win_runes_h);
+            prepare!(ui, get_win_main_w, get_win_main_h);
         }
         "mini" => {
             let ui = MiniMatchWindow::new().unwrap();
