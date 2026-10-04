@@ -19,6 +19,16 @@ if not errorlevel 1 (
   taskkill /im champr.exe /f >nul 2>&1
   timeout /t 2 >nul
 )
+rem A cargo left over from an earlier launch can sit forever on a network resolve while
+rem holding the target build lock, after which every launch hangs silently on
+rem "Blocking waiting for file lock on build directory" - that is exactly the
+rem "double-click and nothing happens" report (2026-10-04). Clear them first, loudly.
+tasklist /fi "imagename eq cargo.exe" 2>nul | find /i "cargo.exe" >nul
+if not errorlevel 1 (
+  echo Clearing leftover cargo processes from a previous launch...
+  taskkill /im cargo.exe /f >nul 2>&1
+  timeout /t 1 >nul
+)
 start "ChampR Server" powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1 server
 rem Launch the app in its own window and exit immediately. The old flow waited up
 rem to 90s for port 3030 inside THIS console; closing the console during that wait

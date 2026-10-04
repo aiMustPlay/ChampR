@@ -170,11 +170,18 @@ function Start-Server {
     }
 
     if (Test-Cmd 'cargo') {
-        Write-Step 'Starting the backend with cargo'
+        Write-Step 'Building the backend (offline) and starting it'
         Initialize-MsvcEnvironment
-        & cargo run -p server
+        # --offline: 在线解析依赖会在网络不通时长时间挂住并霸占构建锁(见 Start-App 注释)
+        & cargo build --offline -p server
         if ($LASTEXITCODE -ne 0) {
-            throw ("cargo run -p server failed with exit code {0}" -f $LASTEXITCODE)
+            throw ("cargo build -p server failed with exit code {0}" -f $LASTEXITCODE)
+        }
+        $serverExe = Join-Path $RepoRoot 'target\debug\server.exe'
+        Write-Step "Running $serverExe"
+        & $serverExe
+        if ($LASTEXITCODE -ne 0) {
+            throw ("server failed with exit code {0}" -f $LASTEXITCODE)
         }
         return
     }
@@ -235,12 +242,22 @@ function Start-App {
     }
 
     Initialize-MsvcEnvironment
-    Write-Step 'Starting the desktop client'
-    # 明确 --bin: 本 crate 还有 ui_preview 第二个 bin, 不指定会让 cargo 直接拒绝
-    # 运行并 exit 101(2026-10-04 全量启动失败事故)。Cargo.toml 里也写了 default-run。
-    & cargo run -p champr --bin champr
+    # --offline 是硬性要求: 在线时 cargo 会去更新 registry index, 网络不通(代理没开)会
+    # 长时间挂住, 同时**霸占 target 构建锁** —— 之后任何启动都卡在
+    # "Blocking waiting for file lock on build directory", 表现就是双击后什么都没有
+    # (2026-10-04 实际事故)。离线构建依赖已全部在本地缓存, 秒级完成;
+    # 若真新增了依赖, 这里会明确报错而不是静默挂死。
+    Write-Step 'Building the desktop client (offline)'
+    & cargo build --offline -p champr --bin champr
     if ($LASTEXITCODE -ne 0) {
-        throw ("cargo run -p champr failed with exit code {0}" -f $LASTEXITCODE)
+        throw ("cargo build -p champr failed with exit code {0}" -f $LASTEXITCODE)
+    }
+    # 直接跑二进制而不是 cargo run: cargo run 会作为父进程常驻, 也多一层"哪个 bin"的坑
+    $appExe = Join-Path $RepoRoot 'target\debug\champr.exe'
+    Write-Step "Starting $appExe"
+    & $appExe
+    if ($LASTEXITCODE -ne 0) {
+        throw ("champr exited with code {0}" -f $LASTEXITCODE)
     }
 }
 
