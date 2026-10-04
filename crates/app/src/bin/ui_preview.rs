@@ -116,14 +116,6 @@ fn main() {
             ])));
             prepare!(ui, get_win_main_w, get_win_main_h);
         }
-        "mini" => {
-            let ui = MiniMatchWindow::new().unwrap();
-            ui.set_match_status(slint::SharedString::from("对局中 18:32"));
-            ui.set_match_text(slint::SharedString::from(
-                "比分 12:9 | 小龙 2:1 | 先锋 1:0\n我 4/1/6 补刀 182\n对位 1/3/2 补刀 145",
-            ));
-            prepare!(ui, get_win_mini_w, get_win_mini_h);
-        }
         "settings" => {
             let ui = TtsSettingsWindow::new().unwrap();
             prepare!(ui, get_win_settings_w, get_win_settings_h);

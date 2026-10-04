@@ -39,8 +39,7 @@ ChampR 是一个 Windows 英雄联盟助手：
 - `ui/app.slint`
   - 主窗口(内容区三 Tab: 符文 / 对局数据 / 大师对话)
   - Settings 窗口
-  - 迷你窗(对局摘要)
-  - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings|mini]`
+  - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings]`
     把窗口用软件渲染器画进 `.cache/ui-preview-*.png`, 布局改动先自检再交付
 
 ### LCU 核心 `crates/lcu`
@@ -212,17 +211,14 @@ Rust TTS
   辅助信息只走 TTS 声音; 任何新功能默认不得在 InProgress 阶段显示窗口
 - 窗口生命周期跟随 LCU 阶段: 选人开始把主窗内容区**自动切到「符文」Tab**(2026-10-04
   起符文面板并入主窗, 不再单独弹窗, 也就没有"关掉别重弹"的状态了); 用户手点过 Tab 后
-  45 秒内不自动抢台。迷你窗(340×220 置顶)默认关闭,
-  多屏玩家主动勾选后每局进场弹一次到"非游戏屏"(X 关掉不重弹, 离局自动收);
-  不做 overlay 大窗/自动赛后页(见 analysis_and_design/ui-lifecycle-v2.md 九节)
+  45 秒内不自动抢台。**不做任何置顶/悬浮小窗**(用户 2026-10-04 拍板去掉迷你窗):
+  对局信息统一在主窗「对局数据」Tab 输出, 目标提醒走 TTS;
+  也不做 overlay 大窗/自动赛后页(见 analysis_and_design/ui-lifecycle-v2.md 九节)
 - 显示器固定走设置页手动选屏(settings.pinned_monitor, monitors.rs Win32 枚举),
-  不做自动跟游戏屏——可解释性优于自动化; 管理窗/符文窗落在指定屏
-- 对局中窗口铁律(用户 2026-09-30 拍板, 游戏必须完整独占一块屏):
-  迷你窗永不落在游戏屏——crate/app/src/game_screen.rs 按窗口类名 RiotWindowClass
-  识别游戏窗口所在显示器, monitors::mini_target 选非游戏屏落窗, 弹出后立即
-  SetForegroundWindow 把焦点还给游戏(独占全屏下不还会被最小化);
-  单屏或识别不到游戏窗口 → 本局不弹迷你窗(信息走 TTS 与主窗),
-  pinned_monitor 对迷你窗不再生效
+  不做自动跟游戏屏——可解释性优于自动化; 主窗/设置窗落在指定屏
+- 对局期间零窗口(用户 2026-09-30 拍板, 2026-10-04 进一步确认不需要悬浮小窗):
+  对局信息只在主窗「对局数据」Tab 里滚动更新, 不弹任何置顶窗口;
+  游戏必须完整独占一块屏, 因此不做也不允许出现覆盖游戏的小窗。
 
 ## 开发注意
 

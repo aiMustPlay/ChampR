@@ -70,8 +70,6 @@ struct AppState {
     auto_accept_match: bool,
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
     reminder_tier: i32,
-    /// Show the always-on-top mini match window while the game is in progress.
-    mini_live_enabled: bool,
     /// 固定窗口出现的显示器索引(-1 = 不固定)。
     pinned_monitor: i32,
     /// 启动时枚举到的显示器列表(供固定与设置页展示)。
@@ -160,7 +158,6 @@ impl Default for AppState {
             auto_apply_builds: false,
             auto_accept_match: true,
             reminder_tier: 0,
-            mini_live_enabled: true,
             pinned_monitor: -1,
             monitors: Vec::new(),
             playbook: lcu::tips::PlaystyleAtlas::default(),
@@ -259,7 +256,6 @@ fn main() {
     // 所有 runes_* 弱引用都指向主窗(sources_window), 变量名保留以压小改动面。
     let sources_window = SourcesWindow::new().unwrap();
     let tts_settings_window = TtsSettingsWindow::new().unwrap();
-    let mini_window = MiniMatchWindow::new().unwrap();
 
     let saved_settings = settings::Settings::load();
     let mut initial_state = AppState::default();
@@ -289,7 +285,6 @@ fn main() {
     initial_state.auto_apply_builds = saved_settings.auto_apply_builds;
     initial_state.auto_accept_match = saved_settings.auto_accept_match;
     initial_state.reminder_tier = saved_settings.reminder_tier;
-    initial_state.mini_live_enabled = saved_settings.mini_live_window;
     // 显示器固定: 手动配置, 启动时枚举一次; 插拔显示器后重启 app 生效。
     initial_state.pinned_monitor = saved_settings.pinned_monitor;
     initial_state.monitors = monitors::list_monitors();
@@ -353,7 +348,6 @@ fn main() {
     sources_window.set_auto_builds_enabled(saved_settings.auto_apply_builds);
     tts_settings_window.set_auto_accept_match(saved_settings.auto_accept_match);
     sources_window.set_reminder_tier(saved_settings.reminder_tier);
-    sources_window.set_mini_live_enabled(saved_settings.mini_live_window);
 
     // 显示器下拉: "不固定" + 各显示器(枚举顺序即索引)
     {
@@ -896,25 +890,6 @@ fn main() {
         settings.save();
     });
 
-    // -- Main window: mini live window toggle (persisted) --
-    let state_mini = state.clone();
-    let mini_weak_toggle = mini_window.as_weak();
-    sources_window.on_mini_live_toggled(move |enabled| {
-        state_mini.lock().unwrap().mini_live_enabled = enabled;
-        let mut settings = settings::Settings::load();
-        settings.mini_live_window = enabled;
-        settings.save();
-        // 立即生效: 关闭就藏; 打开时若正在对局, 下个生命周期 tick 会显示。
-        if !enabled {
-            let weak = mini_weak_toggle.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(win) = weak.upgrade() {
-                    win.hide().unwrap();
-                }
-            });
-        }
-    });
-
     // -- Spawn background tasks --
     let sources_weak2 = sources_window.as_weak();
     let state_c2 = state.clone();
@@ -931,18 +906,15 @@ fn main() {
 
     let match_lifecycle_weak = sources_window.as_weak();
     let match_lifecycle_state = state.clone();
-    let match_lifecycle_mini = mini_window.as_weak();
     rt_handle.spawn(match_lifecycle_task(
         match_lifecycle_weak,
         match_lifecycle_state,
-        match_lifecycle_mini,
     ));
 
     // Live match panel in the main window (score/objectives/matchup, no LLM cost).
     let panel_weak = sources_window.as_weak();
     let panel_state = state.clone();
-    let panel_mini = mini_window.as_weak();
-    rt_handle.spawn(live_match_panel_task(panel_weak, panel_state, panel_mini));
+    rt_handle.spawn(live_match_panel_task(panel_weak, panel_state));
 
     // Event-driven objective reminders (first blood / monsters / spawn timers).
     let reminder_weak = sources_window.as_weak();
@@ -1018,8 +990,6 @@ fn main() {
     tts_settings_window
         .global::<Palette>()
         .set_color_scheme(dark);
-    sources_window.global::<Palette>().set_color_scheme(dark);
-    mini_window.global::<Palette>().set_color_scheme(dark);
 
     // 构建戳: 一眼看出跑的是哪一版(排查"改了没生效")
     let build_stamp = format!(
@@ -2255,7 +2225,6 @@ fn match_phase_label(phase: &MatchPhase) -> &'static str {
 async fn live_match_panel_task(
     weak: Weak<SourcesWindow>,
     state: SharedState,
-    mini_weak: Weak<MiniMatchWindow>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(2500));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2305,14 +2274,9 @@ async fn live_match_panel_task(
             // 对局快照出了新内容 → 输出区切到对局页(手动静默期内不抢)
             activate_output_tab(&weak, &state, UI_TAB_MATCH);
             let weak = weak.clone();
-            let mini = mini_weak.clone();
-            let text_for_main = text.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = weak.upgrade() {
-                    win.set_live_match_text(SharedString::from(text_for_main));
-                }
-                if let Some(win) = mini.upgrade() {
-                    win.set_match_text(SharedString::from(text));
+                    win.set_live_match_text(SharedString::from(text));
                 }
             });
         }
@@ -2396,15 +2360,8 @@ async fn objective_reminder_task(weak: Weak<SourcesWindow>, state: SharedState) 
 async fn match_lifecycle_task(
     weak: Weak<SourcesWindow>,
     state: SharedState,
-    mini_weak: Weak<MiniMatchWindow>,
 ) {
     let mut last_session_label = String::new();
-    // Drives the mini live window per phase: shown once on entering InProgress
-    // (user may close it for the rest of the game), hidden the moment the
-    // game leaves InProgress.
-    let mut mini_shown_this_game = false;
-    // 本局"不弹/等窗口"的原因只写一次日志, 避免每 2s 刷屏
-    let mut mini_skip_logged = false;
 
     loop {
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -2464,73 +2421,8 @@ async fn match_lifecycle_task(
             last_session_label = label.to_string();
         }
 
-        // Mini live window orchestration (research baseline: 对局中默认只留
-        // 一个置顶迷你窗, 阶段结束自动收起)。
-        let current_phase = {
-            let s = state.lock().unwrap();
-            s.match_phase.clone()
-        };
-        let mini_enabled = {
-            let s = state.lock().unwrap();
-            s.mini_live_enabled
-        };
-        if current_phase == MatchPhase::InProgress && !mini_shown_this_game {
-            if mini_enabled {
-                // 铁律: 游戏必须完整独占它自己的屏。迷你窗只落在"非游戏屏";
-                // 单屏 / TF识别不到游戏窗口 → 本局不弹(信息走 TTS 与主窗)。
-                let mons = {
-                    let s = state.lock().unwrap();
-                    s.monitors.clone()
-                };
-                let found = game_screen::game_screen_and_hwnd(&mons);
-                let target = monitors::mini_target(&mons, found.map(|(idx, _)| idx));
-                if mons.len() < 2 {
-                    // 单屏: 永远弹不了, 本局就此定案
-                    mini_shown_this_game = true;
-                    if !mini_skip_logged {
-                        mini_skip_logged = true;
-                        kv_log_macro::info!("迷你窗本局不弹: 仅单屏, 游戏必须完整占屏");
-                    }
-                } else {
-                    match (target, found) {
-                        (Some(mi), Some((_, game_hwnd))) => {
-                            mini_shown_this_game = true;
-                            let monitor = mons.iter().find(|m| m.index == mi).cloned();
-                            let mini = mini_weak.clone();
-                            let status = label.to_string();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let (Some(win), Some(m)) = (mini.upgrade(), monitor) {
-                                    win.set_match_status(SharedString::from(status));
-                                    win.show().unwrap();
-                                    pin_window_on_monitor(win.window(), &m, PinAnchor::TopRight);
-                                    // show() 夺焦会让独占全屏游戏最小化 —— 把焦点还回去
-                                    game_screen::restore_focus(game_hwnd);
-                                }
-                            });
-                        }
-                        _ => {
-                            // 进对局瞬间游戏进程可能还没建窗(phase 先切, 窗口后到)。
-                            // 这里**不置位**, 下轮(2s 后)继续试 —— 否则一局都不会再弹。
-                            if !mini_skip_logged {
-                                mini_skip_logged = true;
-                                kv_log_macro::info!("迷你窗等游戏窗口出现(每 2s 重试, 识别到就弹)");
-                            }
-                        }
-                    }
-                }
-            }
-        } else if current_phase != MatchPhase::InProgress {
-            if mini_shown_this_game {
-                let mini = mini_weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(win) = mini.upgrade() {
-                        win.hide().unwrap();
-                    }
-                });
-            }
-            mini_shown_this_game = false;
-            mini_skip_logged = false; // 下一局重新给一次日志
-        }
+        // 悬浮迷你窗已按用户要求移除(2026-10-04): 对局信息统一在主窗「对局数据」
+        // Tab 输出, 不再有任何置顶小窗; 目标提醒仍走 TTS。
     }
 }
 
@@ -3139,8 +3031,6 @@ async fn show_champion_runes(
 
 /// 窗口在目标屏上的落位方式。
 enum PinAnchor {
-    /// 工作区右上角(迷你窗, 贴"视口角落"更自然)
-    TopRight,
     /// 工作区居中
     Center,
 }
@@ -3195,7 +3085,6 @@ fn place_window_in_work_area(window: &slint::Window, m: &monitors::Monitor, anch
     let max_x = (r - phys_w - FRAME_W).max(l);
     let max_y = (b - phys_h - FRAME_H).max(t);
     let (x, y) = match anchor {
-        PinAnchor::TopRight => (max_x - 12, t + 8),
         PinAnchor::Center => (
             (l + r).div_euclid(2) - phys_w.div_euclid(2),
             (t + b).div_euclid(2) - phys_h.div_euclid(2),
@@ -3224,12 +3113,6 @@ fn pin_window_to_monitor(window: &slint::Window, state: &SharedState, anchor: Pi
     if let Some(m) = target {
         place_window_in_work_area(window, m, anchor);
     }
-}
-
-/// 将窗口放进**指定**显示器的工作区(不读 settings, 调用方已经决定了屏)。
-/// 迷你窗用这条: 目标屏由 game_screen 规则求出, 与用户 pinned_monitor 无关。
-fn pin_window_on_monitor(window: &slint::Window, m: &monitors::Monitor, anchor: PinAnchor) {
-    place_window_in_work_area(window, m, anchor);
 }
 
 // ---------------------------------------------------------------------------

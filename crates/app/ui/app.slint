@@ -95,8 +95,6 @@ export global Tokens {
     out property <length> win-settings-h: 906px;
     out property <length> win-settings-min-w: 480px;
     out property <length> win-settings-min-h: 777px;
-    out property <length> win-mini-w: 340px;
-    out property <length> win-mini-h: 240px;
 }
 
 // ---------------------------------------------------------------------------
@@ -623,7 +621,6 @@ export component SourcesWindow inherits Window {
     in-out property <string> coach-input: "";
     in-out property <bool> coach-busy: false;
     in-out property <string> live-match-text: "";
-    in-out property <bool> mini-live-enabled: true;
     // 输出区当前 Tab: 0 = 符文, 1 = 对局数据, 2 = 大师对话(谁刚输出谁上前台)
     in-out property <int> output-tab: 0;
     // 构建戳(git 短 hash + 是否有未提交改动), 由 Rust 启动时注入
@@ -659,7 +656,6 @@ export component SourcesWindow inherits Window {
     callback llm-assistance-changed(bool);
     callback reminder-tier-changed(int);
     callback coach-send-clicked();
-    callback mini-live-toggled(bool);
     // 手动切输出 Tab(调用方记录时间, 45 秒内暂停自动跟随)
     callback output-tab-clicked(int);
     // 正在输入时续期静默(不许对局快照把输入框抢走)
@@ -705,7 +701,6 @@ export component SourcesWindow inherits Window {
                     // 不写 alignment: center —— 那会让整行内容居中, Tab 左边缘
                     // 与下面的内容对不齐(2026-10-03 用户指出的问题)。
                     height: Tokens.btn-height;
-
                     GoldButton {
                         text: "符文";
                         primary: root.output-tab == 0;
@@ -739,14 +734,6 @@ export component SourcesWindow inherits Window {
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 1px;
-                    }
-                    if root.output-tab == 1 : GoldCheck {
-                        text: "开局弹迷你窗";
-                        checked: root.mini-live-enabled;
-                        toggled => {
-                            root.mini-live-enabled = !root.mini-live-enabled;
-                            root.mini-live-toggled(root.mini-live-enabled);
-                        }
                     }
                     if root.output-tab == 2 : Text {
                         text: root.match-session-status;
@@ -1209,55 +1196,3 @@ export component TtsSettingsWindow inherits Window {
     }
 }
 
-// ---------------------------------------------------------------------------
-//  MiniMatchWindow——对局中的置顶迷你窗(取代 overlay 大窗等非我们能力项)
-//  尺寸参照桌面助手通行规格 340x220, 只露对局摘要, 关闭后本局不重弹。
-// ---------------------------------------------------------------------------
-export component MiniMatchWindow inherits Window {
-    default-font-family: Tokens.font-family;
-    icon: @image-url("icons/champr.png");
-    title: "对局摘要";
-    width: Tokens.win-mini-w;
-    height: Tokens.win-mini-h;
-    always-on-top: true;
-    // 对局中置顶显示, 与游戏全屏/无边框模式共存: 深金配色不刺眼
-    background: Tokens.c-page;
-
-    in-out property <string> match-text: "";
-    in-out property <string> match-status: "对局中";
-
-    VerticalLayout {
-        padding: Tokens.s-md;
-        spacing: Tokens.s-sm;
-
-        HorizontalLayout {
-            spacing: Tokens.s-sm;
-            alignment: center;
-            height: Tokens.row-height;
-
-            Rectangle {
-                width: Tokens.status-dot;
-                height: Tokens.status-dot;
-                border-radius: Tokens.status-dot / 2;
-                background: Tokens.c-ok;
-            }
-            Text {
-                text: root.match-status;
-                font-size: Tokens.f-aux;
-                vertical-alignment: center;
-                color: Tokens.c-gold;
-            }
-        }
-
-        // TextEdit 不支持改前景色(跟随系统 Palette), 迷你窗用 Text + 换行
-        Text {
-            text: root.match-text;
-            horizontal-stretch: 1;
-            vertical-stretch: 1;
-            font-size: Tokens.f-aux;
-            color: Tokens.c-text;
-            wrap: word-wrap;
-            vertical-alignment: top;
-        }
-    }
-}

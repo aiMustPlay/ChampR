@@ -49,32 +49,6 @@ unsafe extern "system" fn enum_monitor_proc(
     1 // TRUE
 }
 
-/// 点(物理像素)落在哪一台显示器上。多屏边界重叠时取第一个命中。
-pub fn index_at_point(monitors: &[Monitor], x: i32, y: i32) -> Option<usize> {
-    monitors.iter().find_map(|m| {
-        let (l, t, r, b) = m.work_rect;
-        (x >= l && x < r && y >= t && y < b).then_some(m.index)
-    })
-}
-
-/// 迷你窗目标屏求解(纯函数, 测试覆盖)。
-/// 铁律: 游戏必须完整独占它自己的屏, 迷你窗永不落在游戏屏。
-/// - 明确知道游戏屏 → 任一其它屏(优先主屏, 再按枚举序)
-/// - 游戏屏未知(游戏进程没找到), 多屏 → 保守不弹(None)
-/// - 单屏 → 恒 None(迷你窗不存在, 信息只靠 TTS)
-pub fn mini_target(monitors: &[Monitor], game_screen: Option<usize>) -> Option<usize> {
-    if monitors.len() < 2 {
-        return None;
-    }
-    let game = game_screen?;
-    monitors
-        .iter()
-        .filter(|m| m.index != game)
-        .map(|m| (m.index, m.is_primary))
-        .max_by_key(|(_, primary)| *primary)
-        .map(|(index, _)| index)
-}
-
 /// 枚举当前系统上的显示器(索引即枚举顺序, 主显示器通常在前面)。
 /// 失败/无显示器时返回空 Vec —— 调用方按无固定处理。
 pub fn list_monitors() -> Vec<Monitor> {
@@ -122,26 +96,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn point_lookup_hits_containing_monitor() {
-        let mons = vec![fake(0, 0), fake(1, 1920)];
-        assert_eq!(index_at_point(&mons, 100, 100), Some(0));
-        assert_eq!(index_at_point(&mons, 2000, 100), Some(1));
-        assert_eq!(index_at_point(&mons, -50, 100), None);
-    }
-
-    #[test]
-    fn mini_never_lands_on_game_screen() {
-        let mons = vec![fake(0, 0), fake(1, 1920)];
-        // 游戏在 1 号屏 → 迷你只能去 0 号屏
-        assert_eq!(mini_target(&mons, Some(1)), Some(0));
-        assert_eq!(mini_target(&mons, Some(0)), Some(1));
-        // 游戏屏未知 → 不弹
-        assert_eq!(mini_target(&mons, None), None);
-        // 单屏 → 恒不弹
-        assert_eq!(mini_target(&mons[..1], Some(0)), None);
-        // 三屏: 游戏在外屏, 优先主屏
-        let mons3 = vec![fake(0, 0), fake(1, 1920), fake(2, 3840)];
-        assert_eq!(mini_target(&mons3, Some(2)), Some(0));
-    }
+    // 2026-10-04: index_at_point / mini_target 随迷你窗一起删除(用户不需要悬浮小窗),
+    // 这里不再需要它们的位置判定测试。
 }

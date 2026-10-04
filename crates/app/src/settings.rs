@@ -48,9 +48,6 @@ pub struct Settings {
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
     #[serde(default)]
     pub reminder_tier: i32,
-    /// 对局期间置顶迷你窗(默认关: 游戏时间隐形; 仅多屏玩家主动勾选才弹到非游戏屏)。
-    #[serde(default = "default_mini_live_window")]
-    pub mini_live_window: bool,
     /// 固定窗口出现的显示器索引(-1 = 不固定, 跟随系统等默认行为)。
     /// 手动配置, 不做自动跟随游戏屏——稳定优先。
     #[serde(default = "default_pinned_monitor")]
@@ -120,11 +117,6 @@ fn default_lmstudio_model() -> String {
     "local-model".to_string()
 }
 
-fn default_mini_live_window() -> bool {
-    // 游戏时间隐形原则: 对局期间默认零窗口; 用户明确勾选后才启用迷你窗。
-    false
-}
-
 fn default_pinned_monitor() -> i32 {
     -1
 }
@@ -157,7 +149,6 @@ impl Default for Settings {
             auto_apply_builds: false,
             auto_accept_match: true,
             reminder_tier: 0,
-            mini_live_window: default_mini_live_window(),
             pinned_monitor: default_pinned_monitor(),
             lmstudio_base_url: default_lmstudio_base_url(),
             lmstudio_model: default_lmstudio_model(),
