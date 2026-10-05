@@ -170,10 +170,35 @@ function Invoke-Pnpm {
 }
 
 function Start-Server {
-    # 已在跑就静默复用, 不要二连启动
+    # Reuse a healthy backend, but replace it when the binary on disk is newer than the
+    # process that is running - otherwise backend fixes would never take effect until a
+    # reboot. Killing it is safe now: the previous launcher checks for "server listening"
+    # before treating a non-zero exit as a failure (see below).
     if (Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction SilentlyContinue) {
-        Write-Step 'Backend already listening on 3030, reuse it'
-        return
+        $runningServer = Get-Process server -ErrorAction SilentlyContinue | Select-Object -First 1
+        $serverBinary = Join-Path $RepoRoot 'target\debug\server.exe'
+        $stale = $false
+        if ($runningServer -and (Test-Path $serverBinary)) {
+            try {
+                $stale = (Get-Item $serverBinary).LastWriteTime -gt $runningServer.StartTime
+            }
+            catch {
+                $stale = $false
+            }
+        }
+        if (-not $stale) {
+            Write-Step 'Backend already listening on 3030, reuse it'
+            return
+        }
+        Write-Step 'Backend binary is newer than the running server, restarting it'
+        Stop-Process -Id $runningServer.Id -Force -ErrorAction SilentlyContinue
+        $freeDeadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $freeDeadline) {
+            if (-not (Get-NetTCPConnection -LocalPort 3030 -State Listen -ErrorAction SilentlyContinue)) {
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        }
     }
 
     # docker CLI present != daemon up. PS5.1 traps: no-BOM file parses as ANSI so
@@ -209,15 +234,29 @@ function Start-Server {
             throw ("cargo build -p server failed with exit code {0}" -f $LASTEXITCODE)
         }
         $serverExe = Join-Path $RepoRoot 'target\debug\server.exe'
+        $serverLog = Join-Path $RepoRoot '.cache\server.log'
         Write-Step "Running $serverExe"
         # Hidden console: keep the output in a file so failures can be shown in a dialog.
         # EAP=Continue for the same reason as in Start-App: redirecting stderr of a native
         # command under ErrorActionPreference=Stop throws NativeCommandError in PS 5.1.
         $previousEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        & $serverExe *>> (Join-Path $RepoRoot '.cache\server.log')
+        & $serverExe *>> $serverLog
         $serverCode = $LASTEXITCODE
         $ErrorActionPreference = $previousEap
+
+        # A non-zero code is NOT a failure when this run did bind the port: it means
+        # somebody stopped the server while we were waiting (the launcher used to do that
+        # itself and reported a bogus failure, incident 2026-10-05).
+        $boundPort = $false
+        if (Test-Path $serverLog) {
+            $tail = @(Get-Content $serverLog -Tail 120 -ErrorAction SilentlyContinue)
+            $boundPort = [bool]($tail | Select-String -Pattern 'server listening' -Quiet)
+        }
+        if ($boundPort) {
+            Write-Step ("server exited with code {0} after binding 3030; treating it as an external stop" -f $serverCode)
+            return
+        }
         if ($serverCode -ne 0) {
             throw ("server failed with exit code {0}" -f $serverCode)
         }

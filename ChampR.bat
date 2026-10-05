@@ -20,12 +20,10 @@ rem The running app is closed by run.ps1 (Stop-RunningChampR) with a graceful wi
 rem close, NOT taskkill: taskkill reports exit code 1, which the previous launcher can
 rem only read as a failure and turns into a false-alarm dialog on every re-launch.
 
-rem Restart the backend too, so server-side changes take effect on every launch.
-tasklist /fi "imagename eq server.exe" 2>nul | find /i "server.exe" >nul
-if not errorlevel 1 (
-  taskkill /im server.exe /f >nul 2>&1
-  timeout /t 1 >nul
-)
+rem The backend is NOT killed here: run.ps1 reuses it when port 3030 is already
+rem listening, and killing a server process makes the previous launcher read exit
+rem code 1 as a failure and pop a bogus dialog (incident 2026-10-05). To force a
+rem backend restart, end server.exe manually and start this launcher again.
 
 if not exist ".cache" mkdir ".cache"
 rem Hidden launcher processes; their output goes to the log files below.
