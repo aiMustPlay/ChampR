@@ -1080,6 +1080,16 @@ fn main() {
     );
     sources_window.set_build_stamp(SharedString::from(&build_stamp));
     info!("ChampR build {build_stamp}");
+
+    // 关闭主窗 = 退出程序。
+    // Slint 的默认行为只是把窗口藏起来、事件循环继续跑, 于是进程留在后台 ——
+    // 表现是"关了窗口但进程还在", 启动器无法优雅重启(只能强杀 → exit 1 → 误报失败,
+    // 2026-10-05 事故)。托盘仍在, 退出也可以走托盘菜单。
+    sources_window.on_close_requested(|| {
+        info!("main window close requested; quitting");
+        let _ = slint::quit_event_loop();
+    });
+
     sources_window.show().unwrap();
     // 手动固定的显示器(在 show 之后才有 size())
     pin_window_to_monitor(sources_window.window(), &state, PinAnchor::Center);

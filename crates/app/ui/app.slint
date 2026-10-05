@@ -653,6 +653,9 @@ export component SourcesWindow inherits Window {
     in-out property <[string]> counter-cand-names: [];
 
     callback open-tts-settings-clicked();
+    // 关闭主窗: 声明后 Slint 会把它接到系统关闭按钮上(默认只是隐藏窗口、进程常驻,
+    // 那样启动器只能强杀 → exit 1 → 误报失败, 2026-10-05)
+    callback close-requested();
     // 打开日志文件(启动器不再留常驻控制台, 界面里要能直接看日志)
     callback open-log-clicked();
     callback llm-assistance-changed(bool);

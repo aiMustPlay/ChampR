@@ -320,20 +320,42 @@ function Stop-RunningChampR {
         }
     }
 
-    $deadline = (Get-Date).AddSeconds(6)
+    $deadline = (Get-Date).AddSeconds(8)
     while ((Get-Date) -lt $deadline) {
         if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -eq 0) {
-            return
+            break
         }
         Start-Sleep -Milliseconds 250
     }
 
-    # Still there (hung or no window): force it, but say so in the log
+    # Still there (hung, or started elevated so we cannot touch it): force it, but say so
     Get-Process champr -ErrorAction SilentlyContinue | ForEach-Object {
         Write-Warn ("forcing exit of champr pid {0}" -f $_.Id)
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
-    Start-Sleep -Milliseconds 500
+
+    # Wait until the exe is actually writable again: relinking while the image is still
+    # mapped fails with exit code 101 ("failed to remove file"), which used to surface as
+    # a confusing "build failed" dialog (2026-10-05).
+    $exePath = Join-Path $RepoRoot 'target\debug\champr.exe'
+    $unlockDeadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $unlockDeadline) {
+        if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -eq 0) {
+            try {
+                $stream = [System.IO.File]::Open($exePath, 'Open', 'ReadWrite', 'None')
+                $stream.Close()
+                return
+            }
+            catch {
+                # still mapped; keep waiting
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -gt 0) {
+        throw 'ChampR is still running and cannot be closed (it may have been started as administrator). Exit it from the tray icon, then start this launcher again.'
+    }
 }
 
 function Start-App {
