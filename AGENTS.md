@@ -221,14 +221,26 @@ Rust TTS
   维护选人、游戏过程中的所有关键数据")。数据模型 lcu/advisor.rs::DataTable
   (列 = title/width/emphasis, 行 = cells/section/mine_team/mine/opponent),
   UI 是 app.slint 的 DataTable 组件; **列在选人与对局两个阶段完全相同**:
-  `位 / 英雄 / 召唤师 / 段位 / 胜率 / KDA / 补刀 / 等级 / 基石 / 装备(弹性列)`
+  `位 / 英雄 / 召唤师 / 段位 / 个人胜率 / 英雄胜率 / KDA / 补刀 / 等级 / 装备(弹性列)`
+  - **个人胜率 vs 英雄胜率(用户 2026-10-05: "我要个人战绩")**:
+    - `个人胜率` = **该玩家自己**本赛季单双排总胜率, 由 LCU
+      `/lol-ranked/v1/ranked-stats/{puuid}` 的 wins/losses 算出(lcu::advisor::RankInfo,
+      选人期按 summonerId 查一次并缓存)。与英雄无关 → 换英雄后仍然有效
+    - `英雄胜率` = OP.GG 该英雄该分路的**全服**胜率
+    - **个人·分英雄胜率拿不到**: LCU 只提供本地玩家的比赛记录, 别人的战绩不公开;
+      OP.GG 也没有国服召唤师数据。**不要用全服胜率冒充个人值**, 也不要把两列混为一谈
+    - 对局阶段胜率列取值: 先按**当前正在玩的英雄**查 OP.GG 分路数据, 查不到才退回
+      选人档案 —— 选人后可以换英雄(交易), 用档案值会显示成"旧英雄的胜率"
   - 选人 `build_champ_select_table` → 返回 `(DataTable, Vec<RosterEntry>)`:
-    段位(ranked-stats)、OP.GG 该分路胜率已填; KDA/补刀/等级/基石显示 "-";
+    段位/个人胜率、OP.GG 该分路胜率已填; KDA/补刀/等级显示 "-";
     最后一列表头改成"场次"(放 OP.GG 样本量)
-  - 对局 `build_live_table(..., roster)` → 用实时数据填满, 并从 roster 按
-    **分路优先、英雄次之**补回段位/胜率; 召唤师名以 Live 数据为准, 缺失时用缓存
-  - 缓存: `AppState.match_roster`, 选人每次 session 更新都刷新,
-    **选人会话 Delete 事件清空**(绝不能把上一局的段位带进下一局)
+  - 对局 `build_live_table(..., roster, sections)` → 用实时数据填满; 段位/个人胜率来自
+    roster, **匹配必须带上队伍**(同队+分路 → 同队+英雄 → 召唤师名 → 英雄兜底),
+    否则我和对位同分路会命中同一份档案, 显示成一模一样的段位/胜率(用户 2026-10-05 报障);
+    召唤师名以 Live 数据为准, 缺失时用缓存
+  - 缓存: `AppState.match_roster`, 选人每次 session 更新都刷新;
+    **选人会话 Delete 事件不要清空**(那正是"选人结束、正在进游戏"的时刻, 清掉会让整局
+    段位/胜率都是 "-"), 改为对局结束、阶段回 Idle 时清空(见 match_lifecycle_task)
   - 顶部: 选人=ban 行; 对局=比分 + 双方资源。表下金卡给对位对比(带正负号)+金币/加点/符文
   - 配色: 我方行蓝条 / 敌方红条 / 我 = 金条+金底 / 对位 = 红条; 行序按分路(上/野/中/下/辅)
   - **列宽 0 = 弹性列**, 由 main.rs::resolve_flex_columns 按窗口实际宽度折算成像素;
