@@ -41,6 +41,7 @@ ChampR 是一个 Windows 英雄联盟助手：
   - Settings 窗口
   - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings]`
     把窗口用软件渲染器画进 `.cache/ui-preview-*.png`, 布局改动先自检再交付
+    (不带参数 = 主窗, 已灌对局表格演示数据, 默认停在「对局数据」Tab)
 
 ### LCU 核心 `crates/lcu`
 
@@ -195,7 +196,12 @@ Rust TTS
   缺二进制一次性 warn 并降级直连 reqwest; 引擎失败原样报错不双请求。差集: 思维链/
   推理强度/流式在引擎模式不生效(UI 已标注)。见 analysis_and_design/maohou-integration.md
 - DeepSeek token 节流(prompt 与上轮完全一致时跳过请求)
-- 主窗口对局面板(比分/资源/对位KDA/双方出装,2.5s 刷新,不走 LLM)
+- 主窗口「对局数据」实时表格(lcu/advisor.rs::build_live_table → Slint LiveRow 模型,
+  2.5s 刷新, 不走 LLM): 列 = 位/英雄/召唤师/KDA/补刀/等级/基石/技能/装备, 我方(蓝条)
+  敌方(红条)分区, 我 = 金条+金底、对位 = 红条、阵亡行显示倒计时; 顶部概览(时间/比分/
+  双方资源), 表下金卡给对位对比(补刀/等级/净击杀差值带正负号)与我方金币/加点/符文、
+  近期击杀; 行序按分路(上/野/中/下/辅)。选人阶段(无 Live 数据)该 Tab 回退原文字面板。
+  表头与数据行共用 Tokens.tw-* 列宽, 改列宽必须同时改这两处
 - zh_CN 静态名表(英雄/符文/装备中文名)
 - 原始快照落盘调试(CHAMPR_DUMP_SNAPSHOTS=1)
 
