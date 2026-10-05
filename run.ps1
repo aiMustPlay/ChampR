@@ -49,7 +49,9 @@ function Show-Failure {
 
     $full = $Message
     if ($TailLines -gt 0 -and $LogPath -and (Test-Path $LogPath)) {
-        $tail = Get-Content $LogPath -Tail $TailLines -ErrorAction SilentlyContinue
+        # -Encoding UTF8: app/server logs are UTF-8; PS 5.1 defaults to ANSI and would show
+        # every Chinese line as mojibake inside the dialog (hit 2026-10-05).
+        $tail = Get-Content $LogPath -Tail $TailLines -Encoding UTF8 -ErrorAction SilentlyContinue
         if ($tail) {
             $full = $Message + "`n`n" + ($tail -join "`n")
         }
@@ -603,35 +605,37 @@ function Start-App {
     $ErrorActionPreference = $previousEap
     $stopwatch.Stop()
 
-    # Fast exit only counts as a failure when the app never got as far as showing its
-    # window (checked in the current run's own log section). A quick exit AFTER a healthy
-    # "main window placed" means somebody closed or restarted it, which is not an error
-    # and must not raise a modal dialog (false alarms on 2026-10-05).
-    if ($stopwatch.Elapsed.TotalSeconds -lt 5) {
-        $healthyStart = $false
-        if (Test-Path $appLog) {
-            $tail = @(Get-Content $appLog -Tail 80 -ErrorAction SilentlyContinue)
-            $startIndex = -1
-            for ($i = $tail.Count - 1; $i -ge 0; $i--) {
-                if ($tail[$i] -match 'ChampR starting') { $startIndex = $i; break }
-            }
-            if ($startIndex -ge 0) {
-                $section = $tail[$startIndex..($tail.Count - 1)]
-                $healthyStart = [bool]($section | Select-String -Pattern 'main window placed' -Quiet)
-            }
+    # Was the app started successfully this run? Read the CURRENT run's log section (the
+    # part after the last "ChampR starting") and look for the window placement line.
+    # Anything else - a fast exit, a non-zero code, "exited with code -1" from a
+    # Stop-Process kill - is then an external stop, not a failure. Reporting those as
+    # failures produced a string of bogus dialogs (2026-10-05).
+    $healthyStart = $false
+    if (Test-Path $appLog) {
+        # -Encoding UTF8: the app writes UTF-8 and PS 5.1 would otherwise read it as ANSI,
+        # which turned every Chinese log line into mojibake inside the dialog.
+        $tail = @(Get-Content $appLog -Tail 80 -Encoding UTF8 -ErrorAction SilentlyContinue)
+        $startIndex = -1
+        for ($i = $tail.Count - 1; $i -ge 0; $i--) {
+            if ($tail[$i] -match 'ChampR starting') { $startIndex = $i; break }
         }
-
-        if ($healthyStart) {
-            Write-Step ("champr was closed {0:N1}s after a healthy start; not reporting a failure" -f $stopwatch.Elapsed.TotalSeconds)
-        }
-        else {
-            $script:FailureShown = $true
-            Show-Failure -Title 'ChampR failed to start' -Message ("champr exited after {0:N1}s with code {1} before showing its window" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog -TailLines 8
+        if ($startIndex -ge 0) {
+            $section = $tail[$startIndex..($tail.Count - 1)]
+            $healthyStart = [bool]($section | Select-String -Pattern 'main window placed' -Quiet)
         }
     }
 
-    if ($appCode -ne 0 -and $appCode -ne 1) {
-        throw ("champr exited with code {0} (log: {1})" -f $appCode, $appLog)
+    if ($stopwatch.Elapsed.TotalSeconds -lt 5 -and -not $healthyStart) {
+        $script:FailureShown = $true
+        Show-Failure -Title 'ChampR failed to start' -Message ("champr exited after {0:N1}s with code {1} before showing its window" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog -TailLines 8
+    }
+    elseif ($appCode -ne 0) {
+        if ($healthyStart) {
+            Write-Step ("champr exited with code {0} after a healthy start; treating it as an external stop" -f $appCode)
+        }
+        else {
+            throw ("champr exited with code {0} (log: {1})" -f $appCode, $appLog)
+        }
     }
 }
 
