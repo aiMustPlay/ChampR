@@ -1144,36 +1144,45 @@ fn section_win_rate(
 
 /// 按分路/英雄/召唤师名把选人档案配到当前玩家身上。
 ///
-/// 依次尝试: 分路(最可靠) → 英雄 id → 召唤师名。盲选没有分路时靠后两者兜底;
-/// 少了任何一层都会让"队友的段位/胜率"显示成 "-"(用户 2026-10-05 的报障)。
+/// 依次尝试: **同队**分路 → **同队**英雄 → 召唤师名 → 不分队伍的英雄兜底。
+/// 必须区分队伍: 我和我的对位是**同一个分路**(中 vs 中), 只按分路找会让两行都命中
+/// 名单里第一条同分路记录 —— 用户看到的就是"对面跟我一模一样的胜率"(2026-10-05 报障)。
 fn find_roster<'a>(
     roster: &'a [RosterEntry],
     position: &str,
     champion_id: i64,
     summoner: &str,
+    on_my_team: bool,
 ) -> Option<&'a RosterEntry> {
     let position_label_text = position_label(position);
     if !position_label_text.is_empty() {
-        if let Some(entry) = roster
-            .iter()
-            .find(|entry| entry.position_label == position_label_text)
-        {
+        if let Some(entry) = roster.iter().find(|entry| {
+            entry.mine_team == on_my_team && entry.position_label == position_label_text
+        }) {
             return Some(entry);
         }
     }
     if champion_id > 0 {
-        if let Some(entry) = roster
-            .iter()
-            .find(|entry| entry.champion_id == champion_id && entry.champion_id > 0)
-        {
+        if let Some(entry) = roster.iter().find(|entry| {
+            entry.mine_team == on_my_team
+                && entry.champion_id == champion_id
+                && entry.champion_id > 0
+        }) {
             return Some(entry);
         }
     }
+    // 召唤师名本身唯一, 不必再看队伍
     let summoner = summoner.trim();
     if !summoner.is_empty() {
+        if let Some(entry) = roster.iter().find(|entry| entry.summoner.trim() == summoner) {
+            return Some(entry);
+        }
+    }
+    // 最后兜底: 队伍标记可能对不上(例如盲选期抓的档案), 只认英雄
+    if champion_id > 0 {
         return roster
             .iter()
-            .find(|entry| entry.summoner.trim() == summoner);
+            .find(|entry| entry.champion_id == champion_id && entry.champion_id > 0);
     }
     None
 }
@@ -1412,7 +1421,13 @@ pub fn build_live_table(
             .get(&player.champion_name)
             .and_then(|info| info.key.parse::<i64>().ok())
             .unwrap_or(0);
-        let cached = find_roster(roster, &player.position, champion_id, &player.summoner_name);
+        let cached = find_roster(
+            roster,
+            &player.position,
+            champion_id,
+            &player.summoner_name,
+            player.team == local_team,
+        );
         let rank = cached
             .map(|e| e.rank.clone())
             .filter(|text| !text.trim().is_empty() && text != "-")
@@ -3003,7 +3018,7 @@ mod tests {
     /// 任何一层缺失都会让队友的"段位/胜率"变成 "-"(用户 2026-10-05 报障的根因)。
     #[test]
     fn roster_matching_falls_back_position_then_champion_then_name() {
-        let entry = |pos: &str, champ: i64, name: &str| RosterEntry {
+        let entry = |pos: &str, champ: i64, name: &str, my_team: bool| RosterEntry {
             position: pos.to_string(),
             position_label: position_label(pos),
             champion_id: champ,
@@ -3012,31 +3027,90 @@ mod tests {
             rank: "铂金 II".to_string(),
             win_rate: "51.2%".to_string(),
             games: "1240".to_string(),
-            mine_team: true,
+            mine_team: my_team,
             mine: false,
             opponent: false,
         };
         let roster = vec![
-            entry("middle", 103, "中单队友"),
-            entry("top", 266, "上单队友"),
+            entry("middle", 103, "我方中单", true),
+            entry("top", 266, "我方上单", true),
+            entry("middle", 238, "敌方中单", false),
+            entry("top", 64, "敌方上单", false),
         ];
 
-        // 1) 分路命中(即使英雄不同 —— 换英雄/被抢线也要能配上)
-        let hit = find_roster(&roster, "middle", 0, "").expect("position match");
+        // 1) 同队 + 分路命中(即使英雄不同 —— 换英雄/被抢线也要能配上)
+        let hit = find_roster(&roster, "middle", 0, "", true).expect("my team middle");
         assert_eq!(hit.rank, "铂金 II");
-        assert_eq!(hit.summoner, "中单队友");
+        assert_eq!(hit.summoner, "我方中单");
+        // 关键: 对位同分路必须命中**另一份**档案
+        let foe = find_roster(&roster, "middle", 0, "", false).expect("enemy middle");
+        assert_eq!(foe.summoner, "敌方中单");
+        assert_ne!(hit.summoner, foe.summoner, "我和对位不能是同一份档案");
 
-        // 2) 分路不可用(盲选) → 按英雄 id
-        let hit = find_roster(&roster, "", 266, "").expect("champion match");
-        assert_eq!(hit.summoner, "上单队友");
+        // 2) 分路不可用(盲选) → 按英雄 id(同样分队伍)
+        let hit = find_roster(&roster, "", 266, "", true).expect("champion match");
+        assert_eq!(hit.summoner, "我方上单");
+        let foe = find_roster(&roster, "", 64, "", false).expect("enemy champion match");
+        assert_eq!(foe.summoner, "敌方上单");
 
         // 3) 分路与英雄都对不上 → 按召唤师名
-        let hit = find_roster(&roster, "jungle", 999, "中单队友").expect("name match");
-        assert_eq!(hit.champion_id, 103);
+        let hit = find_roster(&roster, "jungle", 999, "敌方中单", false).expect("name match");
+        assert_eq!(hit.champion_id, 238);
 
         // 4) 三个都不匹配 → None(调用方显示 "-")
-        assert!(find_roster(&roster, "jungle", 999, "路人").is_none());
+        assert!(find_roster(&roster, "jungle", 999, "路人", true).is_none());
     }
+
+    /// 回归: 我与对位同分路时, 两行必须各查各的档案 —— 不能显示成一样的胜率/段位。
+    /// 用户 2026-10-05 的原话是"对面跟我一模一样的胜率"。
+    #[test]
+    fn lane_opponent_never_borrows_my_roster_row() {
+        let champions = test_champions();
+        let names = test_names();
+        // 样本数据里 Me=Aatrox(ORDER) 与 Foe=Zed(CHAOS) 都是 TOP 分路
+        let data = sample_live_data();
+
+        let the_row = |mine_team: bool, rank: &str, rate: &str, champ: i64, name: &str| RosterEntry {
+            position: "top".to_string(),
+            // 必须是真实标签("上单", 而不是"上"): 标签写错会让分路分支整体落空,
+            // 测试就测不到队伍区分这条逻辑(写这个测试时踩过一次)。
+            position_label: position_label("top"),
+            champion_id: champ,
+            champion: format!("英雄{champ}"),
+            summoner: name.to_string(),
+            rank: rank.to_string(),
+            win_rate: rate.to_string(),
+            games: "1000".to_string(),
+            mine_team,
+            mine: mine_team,
+            opponent: !mine_team,
+        };
+        let roster = vec![
+            the_row(true, "黄金 II", "48.00%", 266, "Me"),
+            the_row(false, "铂金 I", "53.00%", 238, "Foe"),
+        ];
+
+        let table =
+            build_live_table(&data, &champions, &names, &roster, &HashMap::new()).expect("table");
+        let rows: Vec<&TableRow> = table
+            .rows
+            .iter()
+            .filter(|row| row.section.is_empty())
+            .collect();
+        let my_row = rows.iter().find(|row| row.mine).expect("my row");
+        let foe_row = rows.iter().find(|row| row.opponent).expect("opponent row");
+
+        // 列序: 位/英雄/召唤师/段位/胜率/…
+        assert_eq!(my_row.cells[3], "黄金 II");
+        assert_eq!(my_row.cells[4], "48.00%");
+        assert_eq!(foe_row.cells[3], "铂金 I");
+        assert_eq!(foe_row.cells[4], "53.00%");
+        assert_ne!(
+            my_row.cells[4], foe_row.cells[4],
+            "我和对位的胜率不能相同(各查各的档案)"
+        );
+    }
+
     #[test]
     fn display_width_counts_cjk_double() {
         assert_eq!(display_width("ab"), 2);
