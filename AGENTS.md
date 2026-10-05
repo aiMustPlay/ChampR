@@ -238,7 +238,11 @@ Rust TTS
     roster, **匹配必须带上队伍**(同队+分路 → 同队+英雄 → 召唤师名 → 英雄兜底),
     否则我和对位同分路会命中同一份档案, 显示成一模一样的段位/胜率(用户 2026-10-05 报障);
     召唤师名以 Live 数据为准, 缺失时用缓存
-  - 缓存: `AppState.match_roster`, 选人每次 session 更新都刷新;
+  - 磁盘缓存(crates/app/src/cache.rs, 用户 2026-10-05: "每次对局都要重新查一遍胜率"):
+    段位/个人胜率按 summonerId 存 `%APPDATA%\champr\cache\ranked-stats.json`(TTL 24h),
+    OP.GG 分路数据按英雄 id 存 `opgg-sections.json`(TTL 6h), 启动时读入, 拿到新数据即落盘。
+    `ensure_opgg_sections` 另有 10 分钟冷却(内存 `opgg_attempt_at`): 对局任务每 2.5s 会为
+    场上所有英雄调它, 没这层节流会每 2.5 秒白跑一次无效请求。坏缓存文件只记日志不崩。  - 缓存: `AppState.match_roster`, 选人每次 session 更新都刷新;
     **选人会话 Delete 事件不要清空**(那正是"选人结束、正在进游戏"的时刻, 清掉会让整局
     段位/胜率都是 "-"), 改为对局结束、阶段回 Idle 时清空(见 match_lifecycle_task)
   - 顶部: 选人=ban 行; 对局=比分 + 双方资源。表下金卡给对位对比(带正负号)+金币/加点/符文

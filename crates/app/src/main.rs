@@ -28,6 +28,7 @@ use lcu::{
 };
 
 slint::include_modules!();
+mod cache;
 mod clipboard;
 mod game_screen;
 mod monitors;
@@ -152,6 +153,12 @@ struct AppState {
     opgg_sections_cache: HashMap<i64, Vec<lcu::builds::BuildSection>>,
     /// Ranked summary cache keyed by summoner id, fetched at most once per player.
     ranked_stats_cache: HashMap<i64, lcu::advisor::RankInfo>,
+    /// 段位/个人胜率的抓取时间(summonerId -> unix 秒), 落盘用 —— 避免"每局重新查一遍"(用户 2026-10-05)
+    ranked_stats_at: HashMap<i64, u64>,
+    /// OP.GG 分路数据的抓取时间(英雄 id -> unix 秒), 落盘用
+    opgg_sections_at: HashMap<i64, u64>,
+    /// 上次尝试抓取 OP.GG 数据的时间(含失败), 只用于节流重试, 不落盘
+    opgg_attempt_at: HashMap<i64, std::time::Instant>,
     /// Stable identifier for the current match session.
     match_id: String,
     /// Current observed gameflow/live-client phase.
@@ -164,6 +171,9 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
+        // 启动时先读磁盘缓存: 熟面孔/常见英雄直接命中, 不再"每局重查一遍"
+        let (cached_sections, cached_section_times) = cache::load_sections();
+        let (cached_ranks, cached_rank_times) = cache::load_ranks();
         Self {
             auth_url: String::new(),
             is_tencent: false,
@@ -232,8 +242,11 @@ impl Default for AppState {
             coach_request_lock: Arc::new(tokio::sync::Mutex::new(())),
             speech_lock: Arc::new(Mutex::new(())),
             static_names: web::StaticNames::default(),
-            opgg_sections_cache: HashMap::new(),
-            ranked_stats_cache: HashMap::new(),
+            opgg_sections_cache: cached_sections,
+            ranked_stats_cache: cached_ranks,
+            ranked_stats_at: cached_rank_times,
+            opgg_sections_at: cached_section_times,
+            opgg_attempt_at: HashMap::new(),
             match_id: String::new(),
             match_phase: MatchPhase::Idle,
             match_roster: Vec::new(),
@@ -2245,18 +2258,39 @@ fn live_local_champion_id(game_data: &Value, champions: &ChampionsMap) -> i64 {
         .unwrap_or(0)
 }
 
-/// Fetch and cache OP.GG build sections for the given champions (skips cached ones).
+/// 取 OP.GG 分路数据(按英雄 id), 命中缓存/在重试冷却期内直接返回。
+///
+/// 用户 2026-10-05: "每次对局都要重新查一遍胜率" —— 对局任务每 2.5s 会为场上所有英雄
+/// 调一次这里, 所以必须:
+///   1. 已缓存(含启动时从磁盘读入)的不再回源
+///   2. 上次尝试失败的, 十分钟内不重试(否则每 2.5s 白跑一次)
+///   3. 新拿到的数据落盘, 下次启动直接命中
 async fn ensure_opgg_sections(state: &SharedState, champion_ids: &[i64]) {
+    let now = std::time::Instant::now();
     let missing: Vec<i64> = {
         let s = state.lock().unwrap();
         champion_ids
             .iter()
             .copied()
             .filter(|id| *id > 0 && !s.opgg_sections_cache.contains_key(id))
+            .filter(|id| {
+                s.opgg_attempt_at
+                    .get(id)
+                    .map(|at| now.duration_since(*at).as_secs() >= cache::RETRY_AFTER_SECS)
+                    .unwrap_or(true)
+            })
             .collect()
     };
     if missing.is_empty() {
         return;
+    }
+
+    {
+        // 先记下尝试时间: 即使失败也进冷却, 避免每 tick 重试
+        let mut s = state.lock().unwrap();
+        for id in &missing {
+            s.opgg_attempt_at.insert(*id, now);
+        }
     }
 
     let source = DEFAULT_SOURCE_VALUE.to_string();
@@ -2266,13 +2300,27 @@ async fn ensure_opgg_sections(state: &SharedState, champion_ids: &[i64]) {
     }))
     .await;
 
+    let stamp = cache::now_secs();
     let mut s = state.lock().unwrap();
+    let mut changed = false;
     for (id, result) in fetched {
-        if let Ok(sections) = result {
-            if !sections.is_empty() {
+        match result {
+            Ok(sections) if !sections.is_empty() => {
                 s.opgg_sections_cache.insert(id, sections);
+                s.opgg_sections_at.insert(id, stamp);
+                changed = true;
+            }
+            Ok(_) => {
+                // 后端没有这个英雄的数据: 记日志, 冷却期内不再打扰
+                s.opgg_attempt_at.insert(id, std::time::Instant::now());
+            }
+            Err(err) => {
+                log::warn!("OP.GG 分路数据抓取失败(champion {id}): {err:?}");
             }
         }
+    }
+    if changed {
+        cache::save_sections(&s.opgg_sections_cache, &s.opgg_sections_at);
     }
 }
 
@@ -2324,11 +2372,15 @@ async fn build_champ_select_prompt(
         .await;
 
         let mut s = state.lock().unwrap();
+        let now = cache::now_secs();
         for (summoner_id, text) in fetched {
             if let Some(text) = text {
+                s.ranked_stats_at.insert(summoner_id, now);
                 s.ranked_stats_cache.insert(summoner_id, text);
             }
         }
+        // 落盘: 下一局/下次启动直接命中, 不再重复查(用户 2026-10-05 "每次对局都要重新查一遍")
+        cache::save_ranks(&s.ranked_stats_cache, &s.ranked_stats_at);
     }
 
     // 3) OP.GG sections for every locked/hovered champion so the advisor can do

@@ -813,6 +813,7 @@ dependencies = [
  "lcu",
  "log",
  "serde",
+ "serde_json",
  "slint",
  "slint-build",
  "tokio",
