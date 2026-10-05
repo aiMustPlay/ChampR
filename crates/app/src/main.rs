@@ -2395,6 +2395,44 @@ fn render_runes_copy_text(win: &SourcesWindow) -> String {
     out.trim_end().to_string()
 }
 
+/// 表格内边距/色条/列间距(逻辑像素), 与 app.slint 的 DataTable 保持一致。
+const TABLE_STRIP_W: f32 = 3.0;
+const TABLE_GAP: f32 = 4.0;
+/// 页面 + 卡片的内边距合计(逻辑像素)。
+const TABLE_CHROME: f32 = 2.0 * 16.0 + 2.0 * 12.0 + 8.0;
+
+/// 把"弹性列"(宽度 <= 0, 例如装备列)折算成实际像素。
+///
+/// 为什么不在 Slint 里用 horizontal-stretch: 给 Text 写 width: 0px 会把宽度钉死,
+/// stretch 不生效, 那一列直接消失(2026-10-05 预览发现装备列不见了)。
+/// 所以在这里按窗口实际宽度算出来, 列宽全部显式给出。
+fn resolve_flex_columns(columns: &mut [advisor::TableColumn], content_width: f32) {
+    let count = columns.len() as f32;
+    if count == 0.0 {
+        return;
+    }
+    let fixed: f32 = columns
+        .iter()
+        .filter(|col| col.width > 0)
+        .map(|col| col.width as f32)
+        .sum();
+    let overhead = TABLE_STRIP_W + 16.0 + TABLE_GAP * (count - 1.0);
+    let flex = (content_width - fixed - overhead).max(64.0);
+    for col in columns.iter_mut() {
+        if col.width <= 0 {
+            col.width = flex.round() as i32;
+        }
+    }
+}
+
+/// 表格可用内容宽度(逻辑像素): 窗口宽 - 页面/卡片内边距。
+fn table_content_width(win: &SourcesWindow) -> f32 {
+    let scale = win.window().scale_factor() as f32;
+    let physical = win.window().size().width as f32;
+    let logical = if scale > 0.0 { physical / scale } else { physical };
+    (logical - TABLE_CHROME).max(320.0)
+}
+
 async fn greet_coach(weak: Weak<SourcesWindow>, state: SharedState) {
     match send_coach_message(&weak, &state, "hi".to_string()).await {
         Ok(reply) => {
@@ -2458,18 +2496,17 @@ async fn live_match_panel_task(
             )
         };
 
+        // 表格优先: 对局中给实时表, 选人阶段给阵容表 —— 同一个 DataTable 形态,
+        // 用户 2026-10-05 要求"展示数据就用表格, 从选人到对局一直使用"。
+        let mut table: Option<advisor::DataTable> = None;
         let mut text = String::new();
-        // 实时表格: 一进对局就用它替换文字面板(用户 2026-10-05 要求"关键数据表格")
-        let mut table: Option<advisor::LiveTable> = None;
         if !auth_url.is_empty() {
             let endpoint = format!("https://{auth_url}");
             if let Ok(game_data) = live_client::fetch_all_game_data().await {
-                // 表格优先; 表格行拿不到(字段缺失)时退回原来的文字面板
                 match advisor::build_live_table(&game_data, &champions_map, &static_names) {
-                    Ok(built) if !built.rows_mine.is_empty() || !built.rows_theirs.is_empty() => {
-                        table = Some(built);
-                    }
+                    Ok(built) if !built.rows.is_empty() => table = Some(built),
                     _ => {
+                        // Live 数据在但字段不全: 退回文字面板, 至少不显示空白
                         if let Ok(rendered) =
                             advisor::build_live_panel_text(&game_data, &champions_map, &static_names)
                         {
@@ -2478,16 +2515,29 @@ async fn live_match_panel_task(
                     }
                 }
             }
-            if table.is_none() && text.is_empty() {
+            if table.is_none() {
                 if let Ok(session) = lcu_api::get_champ_select_session(&endpoint).await {
-                    if let Ok(rendered) = advisor::build_champ_select_panel_text(
+                    match advisor::build_champ_select_table(
                         &session,
                         &champions_map,
                         &static_names,
                         &ranks,
                         &sections_map,
                     ) {
-                        text = rendered;
+                        Ok(built) if !built.rows.is_empty() => table = Some(built),
+                        _ => {
+                            if text.is_empty() {
+                                if let Ok(rendered) = advisor::build_champ_select_panel_text(
+                                    &session,
+                                    &champions_map,
+                                    &static_names,
+                                    &ranks,
+                                    &sections_map,
+                                ) {
+                                    text = rendered;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2495,29 +2545,29 @@ async fn live_match_panel_task(
 
         // 变化检测: 表格用"内容签名"比较, 免得每 2.5s 都重建模型
         let signature = match &table {
-            Some(t) => format!(
-                "T|{}|{}|{}|{}|{}|{}",
-                t.summary,
-                t.objectives_mine,
-                t.objectives_theirs,
-                t.rows_mine
-                    .iter()
-                    .map(|r| format!("{}{}{}{}{}{}", r.champion, r.kda, r.cs, r.level, r.items, r.dead))
-                    .collect::<Vec<_>>()
-                    .join(","),
-                t.rows_theirs
-                    .iter()
-                    .map(|r| format!("{}{}{}{}{}{}", r.champion, r.kda, r.cs, r.level, r.items, r.dead))
-                    .collect::<Vec<_>>()
-                    .join(","),
-                t.notes.join(";")
-            ),
+            Some(t) => {
+                let mut sig = format!("T|{}|{}", t.summary, t.sub_lines.join("/"));
+                for row in &t.rows {
+                    sig.push('|');
+                    if !row.section.is_empty() {
+                        sig.push_str(&row.section);
+                    } else {
+                        sig.push_str(&row.cells.join(","));
+                        sig.push(if row.mine { '*' } else { ' ' });
+                    }
+                }
+                sig.push('|');
+                sig.push_str(&t.notes.join(";"));
+                sig.push('|');
+                sig.push_str(&t.footnote);
+                sig
+            }
             None => format!("X|{text}"),
         };
 
         if signature != last_text {
             last_text = signature;
-            // 对局快照出了新内容 → 输出区切到对局页(手动静默期内不抢)
+            // 有新内容 → 输出区切到对局页(手动静默期内不抢)
             activate_output_tab(&weak, &state, UI_TAB_MATCH);
             let weak = weak.clone();
             let state_for_table = state.clone();
@@ -2525,56 +2575,67 @@ async fn live_match_panel_task(
                 if let Some(win) = weak.upgrade() {
                     win.set_live_match_text(SharedString::from(text));
                     match table {
-                        Some(table) => {
-                            let to_rows = |rows: Vec<advisor::LiveTableRow>| {
-                                slint::ModelRc::new(slint::VecModel::from(
-                                    rows.into_iter()
-                                        .map(|r| LiveRow {
-                                            pos: SharedString::from(r.position),
-                                            champion: SharedString::from(r.champion),
-                                            summoner: SharedString::from(r.summoner),
-                                            kda: SharedString::from(r.kda),
-                                            cs: SharedString::from(r.cs),
-                                            level: SharedString::from(r.level),
-                                            keystone: SharedString::from(r.keystone),
-                                            spells: SharedString::from(r.spells),
-                                            items: SharedString::from(r.items),
-                                            dead: SharedString::from(r.dead),
-                                            mine: r.is_local,
-                                            opponent: r.is_opponent,
-                                        })
-                                        .collect::<Vec<_>>(),
-                                ))
-                            };
-                            // 表格是自绘的, 复制按钮用这份纯文本(见 AppState::live_table_text)。
-                            // 必须在搬走各字段之前算好。
-                            let table_text = advisor::render_live_table_text(&table);
+                        Some(mut table) => {
+                            // 弹性列(装备/场次)按窗口实际宽度折算, 否则宽度 0 会整列消失
+                            let content_width = table_content_width(&win);
+                            resolve_flex_columns(&mut table.columns, content_width);
+
+                            // 表格是自绘的, 复制按钮用这份纯文本(必须在搬走字段之前算)
+                            let table_text = advisor::render_table_text(&table);
                             if let Ok(mut s) = state_for_table.lock() {
                                 s.live_table_text = table_text;
                             }
-                            win.set_live_summary(SharedString::from(table.summary));
-                            win.set_live_objectives_mine(SharedString::from(table.objectives_mine));
-                            win.set_live_objectives_theirs(SharedString::from(
-                                table.objectives_theirs,
-                            ));
-                            win.set_live_matchup(SharedString::from(table.matchup));
-                            win.set_live_notes(slint::ModelRc::new(slint::VecModel::from(
+
+                            win.set_table_summary(SharedString::from(table.summary));
+                            win.set_table_sub_lines(slint::ModelRc::new(slint::VecModel::from(
+                                table
+                                    .sub_lines
+                                    .into_iter()
+                                    .map(SharedString::from)
+                                    .collect::<Vec<_>>(),
+                            )));
+                            win.set_table_footnote(SharedString::from(table.footnote));
+                            win.set_table_notes(slint::ModelRc::new(slint::VecModel::from(
                                 table
                                     .notes
                                     .into_iter()
                                     .map(SharedString::from)
                                     .collect::<Vec<_>>(),
                             )));
-                            win.set_live_rows_mine(to_rows(table.rows_mine));
-                            win.set_live_rows_theirs(to_rows(table.rows_theirs));
+                            win.set_table_columns(slint::ModelRc::new(slint::VecModel::from(
+                                table
+                                    .columns
+                                    .into_iter()
+                                    .map(|col| TableColumn {
+                                        title: SharedString::from(col.title),
+                                        width: col.width as f32,
+                                        emphasis: col.emphasis,
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )));
+                            win.set_table_rows(slint::ModelRc::new(slint::VecModel::from(
+                                table
+                                    .rows
+                                    .into_iter()
+                                    .map(|row| TableRow {
+                                        section: SharedString::from(row.section),
+                                        cells: slint::ModelRc::new(slint::VecModel::from(
+                                            row.cells
+                                                .into_iter()
+                                                .map(SharedString::from)
+                                                .collect::<Vec<_>>(),
+                                        )),
+                                        mine_team: row.mine_team,
+                                        mine: row.mine,
+                                        opponent: row.opponent,
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )));
                         }
                         None => {
-                            // 回到文字面板(选人阶段 / 数据不可用)
-                            win.set_live_rows_mine(slint::ModelRc::new(slint::VecModel::from(
-                                Vec::<LiveRow>::new(),
-                            )));
-                            win.set_live_rows_theirs(slint::ModelRc::new(slint::VecModel::from(
-                                Vec::<LiveRow>::new(),
+                            // 没有表格(等待数据): 清空, 让 UI 显示文字面板
+                            win.set_table_rows(slint::ModelRc::new(slint::VecModel::from(
+                                Vec::<TableRow>::new(),
                             )));
                         }
                     }

@@ -39,7 +39,7 @@ ChampR 是一个 Windows 英雄联盟助手：
 - `ui/app.slint`
   - 主窗口(内容区三 Tab: 符文 / 对局数据 / 大师对话)
   - Settings 窗口
-  - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings]`
+  - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings|champselect]`
     把窗口用软件渲染器画进 `.cache/ui-preview-*.png`, 布局改动先自检再交付
     (不带参数 = 主窗, 已灌对局表格演示数据, 默认停在「对局数据」Tab)
 
@@ -196,12 +196,18 @@ Rust TTS
   缺二进制一次性 warn 并降级直连 reqwest; 引擎失败原样报错不双请求。差集: 思维链/
   推理强度/流式在引擎模式不生效(UI 已标注)。见 analysis_and_design/maohou-integration.md
 - DeepSeek token 节流(prompt 与上轮完全一致时跳过请求)
-- 主窗口「对局数据」实时表格(lcu/advisor.rs::build_live_table → Slint LiveRow 模型,
-  2.5s 刷新, 不走 LLM): 列 = 位/英雄/召唤师/KDA/补刀/等级/基石/技能/装备, 我方(蓝条)
-  敌方(红条)分区, 我 = 金条+金底、对位 = 红条、阵亡行显示倒计时; 顶部概览(时间/比分/
-  双方资源), 表下金卡给对位对比(补刀/等级/净击杀差值带正负号)与我方金币/加点/符文、
-  近期击杀; 行序按分路(上/野/中/下/辅)。选人阶段(无 Live 数据)该 Tab 回退原文字面板。
-  表头与数据行共用 Tokens.tw-* 列宽, 改列宽必须同时改这两处
+- 主窗口「对局数据」**通用表格**(用户 2026-10-05 拍板: 展示数据就用表格, 从选人到对局
+  一直用同一种形态)。数据模型 lcu/advisor.rs::DataTable(列 = title/width/emphasis,
+  行 = cells/section/mine_team/mine/opponent), UI 是 app.slint 的 DataTable 组件,
+  两个阶段只换列与数据:
+  - 选人 `build_champ_select_table`: 位/英雄/召唤师/段位/分路胜率/场次 + ban 行 + 提示行
+  - 对局 `build_live_table`: 位/英雄/召唤师/KDA/补刀/等级/基石/技能/装备, 2.5s 刷新,
+    顶部比分与双方资源, 表下金卡给对位对比(补刀/等级/净击杀差值带正负号)+金币/加点/符文
+  - 配色: 我方行蓝条 / 敌方红条 / 我 = 金条+金底 / 对位 = 红条; 行序按分路(上/野/中/下/辅)
+  - **列宽 0 = 弹性列**, 由 main.rs::resolve_flex_columns 按窗口实际宽度折算成像素;
+    不能在 Slint 里靠 horizontal-stretch(Slint 的 Text 写了 width: 0px 就钉死, 整列消失)
+  - 表格自绘, 选中不了: 「复制」按钮用 advisor::render_table_text 生成的纯文本
+    (中文按 2 格宽对齐, 超长单元格截断成 …), 文案存 AppState::live_table_text
 - zh_CN 静态名表(英雄/符文/装备中文名)
 - 原始快照落盘调试(CHAMPR_DUMP_SNAPSHOTS=1)
 

@@ -504,10 +504,21 @@ pub struct ChampSelectMember {
     pub puuid: String,
     pub spell1_id: i64,
     pub spell2_id: i64,
+    /// 显示名: 有的区服给 displayName/summonerName, 有的什么都不给(隐私限制)。
+    /// 空串时 UI 用"队友N/对手N/我"兜底, 不要显示空白。
+    pub display_name: String,
 }
 
 impl ChampSelectMember {
     fn parse(member: &Value) -> ChampSelectMember {
+        let display_name = {
+            let display = v_str(member, "displayName");
+            if !display.is_empty() {
+                display
+            } else {
+                v_str(member, "summonerName")
+            }
+        };
         ChampSelectMember {
             cell_id: v_i64(member, "cellId"),
             champion_id: v_i64(member, "championId"),
@@ -517,6 +528,7 @@ impl ChampSelectMember {
             puuid: v_str(member, "puuid").to_string(),
             spell1_id: v_i64(member, "spell1Id"),
             spell2_id: v_i64(member, "spell2Id"),
+            display_name: display_name.to_string(),
         }
     }
 

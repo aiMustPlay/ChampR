@@ -209,113 +209,97 @@ export struct RuneModel {
     sub-style-id: int,
 }
 // ---------------------------------------------------------------------------
-//  LiveRow —— 「对局数据」表格的一行(一个玩家)。数据在 Rust 侧由
-//  lcu::advisor::build_live_table 从 Live Client Data 组装, 2.5s 刷新。
+//  通用表格(用户 2026-10-05: 展示数据就用表格, 选人→对局→比分→装备一直用同一种形态)。
+//  列由 Rust 侧给出(title + 逻辑像素宽, width 0 = 占满剩余), 行是纯字符串单元格,
+//  另有"分区标题行/我/对位"三个标记位决定配色。选人表与对局表是同一个组件。
 // ---------------------------------------------------------------------------
-export struct LiveRow {
-    pos: string,
-    champion: string,
-    summoner: string,
-    kda: string,
-    cs: string,
-    level: string,
-    keystone: string,
-    spells: string,
-    items: string,
-    /// 阵亡倒计时(空 = 存活)
-    dead: string,
-    /// 这行是我
+export struct TableColumn {
+    title: string,
+    /// 列宽(逻辑像素); 0 = 占满剩余宽度
+    width: length,
+    /// 主列: 用正文号(14px)+主文字色, 其余用 12px 次要色
+    emphasis: bool,
+}
+
+export struct TableRow {
+    /// 非空 = 分区标题行(如"我方"/"敌方"), 此时 cells 忽略
+    section: string,
+    cells: [string],
+    /// 这行属于我方(true)还是敌方(false) —— 决定行首色条
+    mine-team: bool,
+    /// 这行是我(金条 + 金底)
     mine: bool,
-    /// 这行是我的对位
+    /// 这行是我的对位(红条)
     opponent: bool,
 }
 
-// 表格的一行。表头与数据行必须用同一组 Tokens.tw-* 列宽, 否则列会错开。
-component LiveRowLine inherits Rectangle {
-    in property <LiveRow> data;
-    in property <color> strip-color: Tokens.c-card-border;
+component DataTable inherits VerticalLayout {
+    in property <[TableColumn]> columns;
+    in property <[TableRow]> rows;
+    in property <color> my-team-strip: #4a7fd4;
+    in property <color> enemy-team-strip: Tokens.c-err;
 
-    height: Tokens.tw-row;
-    background: data.mine ? Tokens.c-accent-bg : transparent;
+    spacing: 0;
 
+    // 表头: 与数据行共用同一组列宽, 前面留出标记列(★/▲)那一格
     HorizontalLayout {
         padding-left: Tokens.s-xs;
         padding-right: Tokens.s-xs;
         spacing: Tokens.s-xs;
-
-        // 行首色条: 我方蓝 / 敌方红 / 我=金 / 对位=红, 一眼分清
+        height: 20px;
         Rectangle {
             width: Tokens.tw-strip;
-            height: Tokens.tw-row - 8px;
-            border-radius: Tokens.tw-strip / 2;
-            background: data.mine ? Tokens.c-gold : (data.opponent ? Tokens.c-err : strip-color);
+            background: transparent;
         }
-        Text {
-            width: Tokens.tw-pos;
-            text: data.pos;
-            font-size: Tokens.f-aux;
+        for col in root.columns : Text {
+            width: col.width;
+            horizontal-stretch: col.width == 0px ? 1 : 0;
+            text: col.title;
+            font-size: Tokens.f-mini;
             color: Tokens.c-text-faint;
             vertical-alignment: center;
         }
-        Text {
-            width: Tokens.tw-champ;
-            text: data.champion;
-            font-size: Tokens.f-body;
-            color: data.mine ? Tokens.c-gold : Tokens.c-text;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        Text {
-            width: Tokens.tw-name;
-            text: data.summoner;
-            font-size: Tokens.f-aux;
-            color: Tokens.c-text-secondary;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        Text {
-            width: Tokens.tw-kda;
-            text: data.kda;
-            font-size: Tokens.f-body;
-            color: Tokens.c-text;
+    }
+
+    for row in root.rows : Rectangle {
+        height: row.section != "" ? 22px : Tokens.tw-row;
+        background: row.mine ? Tokens.c-accent-bg : transparent;
+
+        // 分区标题行(我方/敌方)
+        if row.section != "" : Text {
+            text: row.section;
+            font-size: Tokens.f-mini;
+            color: row.mine-team ? Tokens.c-accent-title : Tokens.c-err;
             vertical-alignment: center;
         }
-        Text {
-            width: Tokens.tw-cs;
-            text: data.cs;
-            font-size: Tokens.f-body;
-            color: Tokens.c-text-secondary;
-            vertical-alignment: center;
-        }
-        Text {
-            width: Tokens.tw-lv;
-            text: data.level;
-            font-size: Tokens.f-body;
-            color: Tokens.c-text-secondary;
-            vertical-alignment: center;
-        }
-        Text {
-            width: Tokens.tw-rune;
-            text: data.keystone;
-            font-size: Tokens.f-aux;
-            color: Tokens.c-text-secondary;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        Text {
-            width: Tokens.tw-spell;
-            text: data.spells;
-            font-size: Tokens.f-aux;
-            color: Tokens.c-text-faint;
-            vertical-alignment: center;
-        }
-        Text {
-            horizontal-stretch: 1;
-            text: data.dead != "" ? "☠ " + data.dead : data.items;
-            font-size: Tokens.f-aux;
-            color: data.dead != "" ? Tokens.c-err : Tokens.c-text-faint;
-            vertical-alignment: center;
-            overflow: elide;
+
+        if row.section == "" : HorizontalLayout {
+            padding-left: Tokens.s-xs;
+            padding-right: Tokens.s-xs;
+            spacing: Tokens.s-xs;
+
+            // 行首色条: 我 = 金, 对位 = 红, 其它按队伍色
+            Rectangle {
+                width: Tokens.tw-strip;
+                height: Tokens.tw-row - 8px;
+                border-radius: Tokens.tw-strip / 2;
+                background: row.mine
+                    ? Tokens.c-gold
+                    : (row.opponent
+                        ? Tokens.c-err
+                        : (row.mine-team ? root.my-team-strip : root.enemy-team-strip));
+            }
+            for cell[idx] in row.cells : Text {
+                width: root.columns.length > idx ? root.columns[idx].width : 0px;
+                horizontal-stretch: (root.columns.length > idx && root.columns[idx].width == 0px) ? 1 : 0;
+                text: cell;
+                font-size: (root.columns.length > idx && root.columns[idx].emphasis) ? Tokens.f-body : Tokens.f-aux;
+                color: (idx == 1 && (row.mine || row.opponent))
+                    ? (row.mine ? Tokens.c-gold : Tokens.c-err)
+                    : ((root.columns.length > idx && root.columns[idx].emphasis) ? Tokens.c-text : Tokens.c-text-secondary);
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
     }
 }
@@ -745,14 +729,13 @@ export component SourcesWindow inherits Window {
     in-out property <string> coach-input: "";
     in-out property <bool> coach-busy: false;
     in-out property <string> live-match-text: "";
-    // 实时关键数据表格(Rust 侧 build_live_table 组装; 空数组 = 还没进对局)
-    in-out property <[LiveRow]> live-rows-mine: [];
-    in-out property <[LiveRow]> live-rows-theirs: [];
-    in-out property <string> live-summary: "";
-    in-out property <string> live-objectives-mine: "";
-    in-out property <string> live-objectives-theirs: "";
-    in-out property <string> live-matchup: "";
-    in-out property <[string]> live-notes: [];
+    // 通用表格(选人表 / 对局表共用同一组件, 列由 Rust 给): 用户要求展示数据一直用表格
+    in-out property <[TableColumn]> table-columns: [];
+    in-out property <[TableRow]> table-rows: [];
+    in-out property <string> table-summary: "";
+    in-out property <[string]> table-sub-lines: [];
+    in-out property <string> table-footnote: "";
+    in-out property <[string]> table-notes: [];
     /// 「复制」按钮的即时反馈("已复制 12 行" / 失败原因), 3 秒后由 Rust 清空
     in-out property <string> copy-status: "";
     // 输出区当前 Tab: 0 = 符文, 1 = 对局数据, 2 = 大师对话(谁刚输出谁上前台)
@@ -964,7 +947,8 @@ export component SourcesWindow inherits Window {
                 }
 
                 // ---- 对局数据: 实时关键数据表格(没进对局时回退到选人文字面板) ----
-                if root.output-tab == 1 && root.live-rows-mine.length > 0 : Rectangle {
+                // ---- 对局数据 / 选人: 同一个通用表格(用户 2026-10-05 要求一直用表格) ----
+                if root.output-tab == 1 && root.table-rows.length > 0 : Rectangle {
                     border-radius: Tokens.radius;
                     border-width: Tokens.border-hair;
                     border-color: Tokens.c-card-border;
@@ -974,77 +958,33 @@ export component SourcesWindow inherits Window {
                     VerticalLayout {
                         padding: Tokens.s-sm;
                         spacing: Tokens.s-xs;
-                        // 表格内容从顶部顺序排; 不写 alignment 时容器会把多余高度
-                        // 均摊到各行之间, 于是卡片里出现大片空隙(2026-10-05 预览发现)
+                        // 内容从顶部顺序排; 不写 alignment 时容器会把多余高度均摊到行间
                         alignment: start;
 
-                        // 概览: 时间/比分 + 双方资源
+                        // 概览: 时间/比分 + 双方资源 / ban 位
                         Text {
-                            text: root.live-summary;
+                            text: root.table-summary;
                             font-size: Tokens.f-section;
                             color: Tokens.c-text;
                         }
-                        HorizontalLayout {
-                            spacing: Tokens.s-md;
-                            Text {
-                                text: "我方  " + root.live-objectives-mine;
-                                font-size: Tokens.f-mini;
-                                color: Tokens.c-accent-title;
-                            }
-                            Text {
-                                text: "敌方  " + root.live-objectives-theirs;
-                                font-size: Tokens.f-mini;
-                                color: Tokens.c-err;
-                            }
+                        for line in root.table-sub-lines : Text {
+                            text: line;
+                            font-size: Tokens.f-mini;
+                            color: Tokens.c-accent-title;
+                            wrap: word-wrap;
                         }
                         Rectangle {
                             height: Tokens.border-hair;
                             background: Tokens.c-card-border;
                         }
 
-                        // 表头
-                        HorizontalLayout {
-                            padding-left: Tokens.s-xs;
-                            padding-right: Tokens.s-xs;
-                            spacing: Tokens.s-xs;
-                            height: 20px;
-                            Rectangle {
-                                width: Tokens.tw-strip;
-                                background: transparent;
-                            }
-                            Text { width: Tokens.tw-pos; text: "位"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { width: Tokens.tw-champ; text: "英雄"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { width: Tokens.tw-name; text: "召唤师"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { width: Tokens.tw-kda; text: "KDA"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { width: Tokens.tw-cs; text: "补刀"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { width: Tokens.tw-lv; text: "等级"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { width: Tokens.tw-rune; text: "基石"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { width: Tokens.tw-spell; text: "技能"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
-                            Text { horizontal-stretch: 1; text: "装备"; font-size: Tokens.f-mini; color: Tokens.c-text-faint; vertical-alignment: center; }
+                        DataTable {
+                            columns: root.table-columns;
+                            rows: root.table-rows;
                         }
 
-                        // 我方(蓝) / 敌方(红)
-                        Text {
-                            text: "我方";
-                            font-size: Tokens.f-mini;
-                            color: Tokens.c-accent-title;
-                        }
-                        for row in root.live-rows-mine : LiveRowLine {
-                            data: row;
-                            strip-color: #4a7fd4;
-                        }
-                        Text {
-                            text: "敌方";
-                            font-size: Tokens.f-mini;
-                            color: Tokens.c-err;
-                        }
-                        for row in root.live-rows-theirs : LiveRowLine {
-                            data: row;
-                            strip-color: Tokens.c-err;
-                        }
-
-                        // 我的金币/加点/符文 + 近期击杀
-                        for note in root.live-notes : Text {
+                        // 我的金币/加点/符文 + 近期击杀 / 选人提示
+                        for note in root.table-notes : Text {
                             text: note;
                             font-size: Tokens.f-mini;
                             color: Tokens.c-text-faint;
@@ -1052,7 +992,7 @@ export component SourcesWindow inherits Window {
                         }
 
                         // 对位对比(金色强调): 补刀/等级/净击杀差, 一眼看出领先还是落后
-                        if root.live-matchup != "" : Rectangle {
+                        if root.table-footnote != "" : Rectangle {
                             border-radius: Tokens.radius;
                             border-width: Tokens.border-hair;
                             border-color: Tokens.c-accent-border;
@@ -1064,7 +1004,7 @@ export component SourcesWindow inherits Window {
                                 padding-right: Tokens.s-sm;
 
                                 Text {
-                                    text: root.live-matchup;
+                                    text: root.table-footnote;
                                     font-size: Tokens.f-aux;
                                     color: Tokens.c-accent-text;
                                     vertical-alignment: center;
@@ -1076,7 +1016,7 @@ export component SourcesWindow inherits Window {
                 }
 
                 // 选人阶段(还没有 Live 数据): 保留原文字面板
-                if root.output-tab == 1 && root.live-rows-mine.length == 0 : TextEdit {
+                if root.output-tab == 1 && root.table-rows.length == 0 : TextEdit {
                     text: root.live-match-text != "" ? root.live-match-text : "等待对局数据(进入英雄选择或对局后自动刷新)";
                     read-only: true;
                     min-height: 220px;
