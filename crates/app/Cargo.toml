@@ -11,7 +11,17 @@ default-run = "champr"
 [dependencies]
 lcu = { path = "../lcu" }
 tokio = { version = "1.44.0", features = ["full"] }
-slint = { version = "1.15", features = ["renderer-software"] }
+# 关掉 slint 的 accessibility(AccessKit): 2026-10-05 用户机器上 UIA 客户端查询
+# 无障碍树时 accesskit_consumer 直接 panic("Focused ID ... is not in the node list"),
+# 整个 app 静默退出 —— 表现就是"双击后什么都没有"。我们不需要无障碍支持,
+# 因此不用 default-features, 按默认集逐项列出(仅去掉 accessibility)。
+slint = { version = "1.15", default-features = false, features = [
+    "std",
+    "backend-default",
+    "renderer-femtovg",
+    "renderer-software",
+    "compat-1-2",
+] }
 kv-log-macro = "1.0.7"
 femme = "2.2.1"
 # 直接依赖 log: 自建"控制台 + 文件"双写 logger(见 main.rs::init_logging)
