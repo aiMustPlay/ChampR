@@ -1106,6 +1106,19 @@ fn or_dash(text: &str) -> String {
     }
 }
 
+/// 分路取值: 顶层 `position` 为空时退用 `counters.position`。
+/// 实测本地 173 个英雄的顶层 position **全是空的**(爬虫把分路存在 counters 里),
+/// 不做这层回退的话分路匹配永远落空, 只能退到"第一条"——多分路英雄会拿错胜率。
+fn section_position(section: &BuildSection) -> &str {
+    if !section.position.trim().is_empty() {
+        return section.position.as_str();
+    }
+    section
+        .counters
+        .as_ref()
+        .map(|counters| counters.position.as_str())
+        .unwrap_or("")
+}
 /// 按英雄 id + 分路从 OP.GG 数据里取胜率; 分路对不上时退用第一条; 拿不到返回 "-"。
 fn section_win_rate(
     sections: &HashMap<i64, Vec<BuildSection>>,
@@ -1121,7 +1134,7 @@ fn section_win_rate(
     let wanted = position_label(position);
     let section = list
         .iter()
-        .find(|s| !wanted.is_empty() && position_label(&s.position) == wanted)
+        .find(|s| !wanted.is_empty() && position_label(section_position(s)) == wanted)
         .or_else(|| list.first());
     match section {
         Some(s) if !s.win_rate.trim().is_empty() => s.win_rate.clone(),
@@ -1209,7 +1222,7 @@ pub fn build_champ_select_table(
         let position = position_label(&member.assigned_position);
         let section = sections_map.get(&member.effective_champion()).and_then(|list| {
             list.iter()
-                .find(|s| position_label(&s.position) == position)
+                .find(|s| position_label(section_position(s)) == position)
                 .or_else(|| list.first())
         });
         RosterEntry {
