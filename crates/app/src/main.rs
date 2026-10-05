@@ -108,6 +108,8 @@ struct AppState {
     ui_tab_manual_at: Option<std::time::Instant>,
     /// 符文对比卡内容(我方 vs 对位符文特性 + 扬长避短), 由对局轮询计算。
     rune_compare: Option<(String, String)>,
+    /// 选人期缓存的选手档案(段位/OP.GG 分路胜率), 开局后合并进同一张状态表格。
+    match_roster: Vec<lcu::advisor::RosterEntry>,
     /// 「对局数据」表格的纯文本版本(表格是自绘的, 选中不了, 复制按钮用这份文本)。
     live_table_text: String,
     /// TTS voice configuration used by the advice loop.
@@ -234,6 +236,7 @@ impl Default for AppState {
             ranked_stats_cache: HashMap::new(),
             match_id: String::new(),
             match_phase: MatchPhase::Idle,
+            match_roster: Vec::new(),
             last_progress_key: String::new(),
             ui_log: String::new(),
         }
@@ -1668,6 +1671,9 @@ async fn lcu_monitor_task(
                                             s.last_auto_applied_champion = 0;
                                             s.last_applied_plan_sig.clear();
                                             s.counter_plan = None;
+                                            // 本局结束: 选人档案不能留给下一局
+                                            s.match_roster.clear();
+                                            s.auto_action_last = None;
                                         }
                                         let rw = runes_weak.clone();
                                         let _ = slint::invoke_from_event_loop(move || {
@@ -2803,10 +2809,23 @@ async fn live_match_panel_task(
         // 用户 2026-10-05 要求"展示数据就用表格, 从选人到对局一直使用"。
         let mut table: Option<advisor::DataTable> = None;
         let mut text = String::new();
+        // 选人期缓存的选手档案(段位/OP.GG 胜率): 开局后合进同一张状态表格,
+        // 这样列在整局里不变, 只是逐渐填满(用户 2026-10-05 的要求)。
+        let cached_roster = {
+            state
+                .lock()
+                .map(|s| s.match_roster.clone())
+                .unwrap_or_default()
+        };
         if !auth_url.is_empty() {
             let endpoint = format!("https://{auth_url}");
             if let Ok(game_data) = live_client::fetch_all_game_data().await {
-                match advisor::build_live_table(&game_data, &champions_map, &static_names) {
+                match advisor::build_live_table(
+                    &game_data,
+                    &champions_map,
+                    &static_names,
+                    &cached_roster,
+                ) {
                     Ok(built) if !built.rows.is_empty() => table = Some(built),
                     _ => {
                         // Live 数据在但字段不全: 退回文字面板, 至少不显示空白
@@ -2827,7 +2846,15 @@ async fn live_match_panel_task(
                         &ranks,
                         &sections_map,
                     ) {
-                        Ok(built) if !built.rows.is_empty() => table = Some(built),
+                        Ok((built, roster)) => {
+                            // 缓存档案供开局后合并; 表本身照旧显示
+                            if let Ok(mut s) = state.lock() {
+                                s.match_roster = roster;
+                            }
+                            if !built.rows.is_empty() {
+                                table = Some(built);
+                            }
+                        }
                         _ => {
                             if text.is_empty() {
                                 if let Ok(rendered) = advisor::build_champ_select_panel_text(

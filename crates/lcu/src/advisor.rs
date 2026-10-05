@@ -1047,34 +1047,6 @@ fn panel_player_line(player: &LivePlayer, champions: &ChampionsMap, names: &Stat
     )
 }
 
-/// 主窗「对局数据」表格的一行(一个玩家)。UI 只负责画, 换算全在这里。
-///
-/// 2026-10-05: 已被通用的 DataTable 取代(用户要求"展示数据就用表格, 从头到尾一直使用"),
-/// 这里不再保留专门的 LiveTable 结构, 只留下列宽常量与 build_live_table。
-/// 对局中的列宽(逻辑像素), 与 app.slint 里历史用的 Tokens.tw-* 保持一致。
-/// 第 3 个字段 = emphasis(主列, 大字).
-const LIVE_COLUMNS: [(&str, i32, bool); 9] = [
-    ("位", 34, false),
-    ("英雄", 92, true),
-    ("召唤师", 96, false),
-    ("KDA", 76, true),
-    ("补刀", 50, true),
-    ("等级", 42, true),
-    ("基石", 76, false),
-    ("技能", 72, false),
-    ("装备", 0, false), // 0 = 按窗口宽度占满剩余(见 main.rs::resolve_flex_columns)
-];
-
-/// 选人阶段的列: 没有 KDA/补刀, 换成段位与 OP.GG 分路胜率。
-const CHAMP_SELECT_COLUMNS: [(&str, i32, bool); 6] = [
-    ("位", 40, false),
-    ("英雄", 120, true),
-    ("召唤师", 150, false),
-    ("段位", 96, true),
-    ("分路胜率", 96, true),
-    ("场次", 0, false), // 弹性列
-];
-
 fn columns_of(spec: &[(&str, i32, bool)]) -> Vec<TableColumn> {
     spec.iter()
         .map(|(title, width, emphasis)| TableColumn {
@@ -1085,12 +1057,273 @@ fn columns_of(spec: &[(&str, i32, bool)]) -> Vec<TableColumn> {
         .collect()
 }
 
-/// 把 Live Client Data 的 allgamedata 变成表格行。失败(没进对局/字段缺失)时返回 Err,
-/// 调用方回退到文字面板。
+/// 选人期的"选手档案": 段位、OP.GG 分路胜率这些**只有选人阶段拿得到**的数据。
+///
+/// 用户 2026-10-05: "用一个状态表格维护选人、游戏过程中的所有关键数据" ——
+/// 于是选人阶段把这些存进 AppState, 开局后 build_live_table 再按分路/英雄合并回来,
+/// 让同一张表在整局里列不变、只是逐渐填满。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RosterEntry {
+    /// LCU 分路(assignedPosition / live position), 用于跨阶段配对
+    pub position: String,
+    /// 分路中文(上/野/中/下/辅)
+    pub position_label: String,
+    pub champion_id: i64,
+    /// 英雄中文名(选人期可能是"未选择"/"XX(意向)")
+    pub champion: String,
+    pub summoner: String,
+    /// 段位(选人期查 ranked-stats 得到; 拿不到为 "-")
+    pub rank: String,
+    /// OP.GG 该英雄该分路胜率(拿不到为 "-")
+    pub win_rate: String,
+    pub games: String,
+    pub mine_team: bool,
+    pub mine: bool,
+    pub opponent: bool,
+}
+
+/// 统一状态表格的列(选人与对局共用): 选人期先填 段位/胜率, 开局后填 KDA/补刀/等级/装备。
+const MATCH_COLUMNS: [(&str, i32, bool); 10] = [
+    ("位", 30, false),
+    ("英雄", 82, true),
+    ("召唤师", 100, false),
+    ("段位", 66, false),
+    ("胜率", 52, true),
+    ("KDA", 62, true),
+    ("补刀", 44, true),
+    ("等级", 34, true),
+    ("基石", 62, false),
+    ("装备", 0, false), // 弹性列; 选人阶段这一列放"场次"(见下)
+];
+
+/// 空值统一显示成 "-", 免得表格里出现空白格子。
+fn or_dash(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        "-".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 按分路/英雄把选人档案配到当前玩家身上。
+/// 先按分路(最可靠), 再按英雄 id, 最后按英雄名 —— 盲选没有分路时靠英雄名兜底。
+fn find_roster<'a>(roster: &'a [RosterEntry], position: &str, champion_id: i64) -> Option<&'a RosterEntry> {
+    let position_label_text = position_label(position);
+    roster
+        .iter()
+        .find(|entry| {
+            !position_label_text.is_empty() && entry.position_label == position_label_text
+        })
+        .or_else(|| {
+            (champion_id > 0)
+                .then(|| {
+                    roster
+                        .iter()
+                        .find(|entry| entry.champion_id == champion_id && entry.champion_id > 0)
+                })
+                .flatten()
+        })
+}
+
+/// 选人阶段: 生成状态表格 + 需要缓存到对局期的选手档案。
+pub fn build_champ_select_table(
+    session: &Value,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+    ranks: &HashMap<i64, String>,
+    sections_map: &HashMap<i64, Vec<BuildSection>>,
+) -> anyhow::Result<(DataTable, Vec<RosterEntry>)> {
+    let snapshot = ChampSelectSnapshot::from_session(session)?;
+
+    let ban_names = |bans: &[i64]| {
+        bans.iter()
+            .filter_map(|id| champ_zh_by_id(*id, champions, names))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    let local_cell = snapshot.local_member().map(|m| m.cell_id).unwrap_or(-1);
+    let opponent_cell = snapshot.lane_opponent().map(|m| m.cell_id).unwrap_or(-1);
+
+    // 名字: 区服不给名字时按队伍顺序兜底成"队友1/对手2", 不留空白
+    let name_of = |member: &ChampSelectMember, index: usize, mine: bool| -> String {
+        if !member.display_name.is_empty() {
+            return member.display_name.clone();
+        }
+        if member.cell_id == local_cell {
+            return "我".to_string();
+        }
+        format!("{}{}", if mine { "队友" } else { "对手" }, index + 1)
+    };
+
+    let entry_of = |member: &ChampSelectMember, index: usize, mine: bool| -> RosterEntry {
+        let champion = champ_zh_by_id(member.effective_champion(), champions, names)
+            .map(|zh| {
+                if member.champion_id > 0 {
+                    zh
+                } else {
+                    format!("{zh}(意向)")
+                }
+            })
+            .unwrap_or_else(|| "未选择".to_string());
+        let position = position_label(&member.assigned_position);
+        let section = sections_map.get(&member.effective_champion()).and_then(|list| {
+            list.iter()
+                .find(|s| position_label(&s.position) == position)
+                .or_else(|| list.first())
+        });
+        RosterEntry {
+            position: member.assigned_position.clone(),
+            position_label: position,
+            champion_id: member.effective_champion(),
+            champion,
+            summoner: name_of(member, index, mine),
+            rank: ranks
+                .get(&member.summoner_id)
+                .cloned()
+                .unwrap_or_else(|| "-".to_string()),
+            win_rate: section
+                .map(|s| s.win_rate.clone())
+                .unwrap_or_else(|| "-".to_string()),
+            games: section
+                .map(|s| s.pick_count.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            mine_team: mine,
+            mine: member.cell_id == local_cell,
+            opponent: member.cell_id == opponent_cell,
+        }
+    };
+
+    let mut roster: Vec<RosterEntry> = snapshot
+        .my_team
+        .iter()
+        .enumerate()
+        .map(|(index, member)| entry_of(member, index, true))
+        .collect();
+    roster.extend(
+        snapshot
+            .their_team
+            .iter()
+            .enumerate()
+            .map(|(index, member)| entry_of(member, index, false)),
+    );
+
+    let row_of = |entry: &RosterEntry| -> TableRow {
+        TableRow {
+            section: String::new(),
+            cells: vec![
+                or_dash(&entry.position_label),
+                or_dash(&entry.champion),
+                or_dash(&entry.summoner),
+                or_dash(&entry.rank),
+                or_dash(&entry.win_rate),
+                "-".to_string(), // KDA: 对局开始后才有
+                "-".to_string(), // 补刀
+                "-".to_string(), // 等级
+                "-".to_string(), // 基石
+                or_dash(&entry.games), // 选人期装备列先放"场次"(样本量), 开局换成装备
+            ],
+            mine_team: entry.mine_team,
+            mine: entry.mine,
+            opponent: entry.opponent,
+        }
+    };
+
+    let order_key = |entry: &RosterEntry| -> u8 {
+        match entry.position_label.as_str() {
+            "上" => 0,
+            "野" => 1,
+            "中" => 2,
+            "下" => 3,
+            "辅" => 4,
+            _ => 5,
+        }
+    };
+    let mut mine_rows: Vec<&RosterEntry> = roster.iter().filter(|e| e.mine_team).collect();
+    let mut their_rows: Vec<&RosterEntry> = roster.iter().filter(|e| !e.mine_team).collect();
+    mine_rows.sort_by_key(|entry| order_key(entry));
+    their_rows.sort_by_key(|entry| order_key(entry));
+
+    let mut rows = vec![TableRow {
+        section: "我方".to_string(),
+        mine_team: true,
+        ..Default::default()
+    }];
+    rows.extend(mine_rows.iter().map(|entry| row_of(entry)));
+    rows.push(TableRow {
+        section: "敌方".to_string(),
+        mine_team: false,
+        ..Default::default()
+    });
+    rows.extend(their_rows.iter().map(|entry| row_of(entry)));
+
+    let mut sub_lines = vec![format!(
+        "ban 我方[{}]  敌方[{}]",
+        ban_names(&snapshot.my_bans),
+        ban_names(&snapshot.their_bans)
+    )];
+    sub_lines.retain(|line| !line.trim().is_empty());
+
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(local) = snapshot.local_member() {
+        let mut status = format!("本机位置 {}", position_label(&local.assigned_position));
+        if let Some(opponent) = snapshot.lane_opponent() {
+            if let Some(champ) = champ_zh_by_id(opponent.effective_champion(), champions, names) {
+                status.push_str(&format!(
+                    " | 对位 敌方{} {champ}",
+                    position_label(&opponent.assigned_position)
+                ));
+            }
+        }
+        notes.push(status);
+
+        if let Some(bans) =
+            ban_suggestions(local.effective_champion(), sections_map, champions, names, 3)
+        {
+            notes.push(bans);
+        }
+        if let Some(opponent) = snapshot.lane_opponent() {
+            if let Some(note) = build_counter_note(
+                local.effective_champion(),
+                &local.assigned_position,
+                opponent.effective_champion(),
+                sections_map,
+                champions,
+            ) {
+                notes.push(note);
+            }
+        }
+    }
+
+    // 选人期没有装备, 最后一列放"场次", 表头也要跟着改(否则列名与内容不符)
+    let mut columns = columns_of(&MATCH_COLUMNS);
+    if let Some(last) = columns.last_mut() {
+        last.title = "场次".to_string();
+    }
+    if let Some(games_col) = columns.get_mut(9) {
+        games_col.emphasis = false;
+    }
+
+    Ok((
+        DataTable {
+            summary: "英雄选择中".to_string(),
+            sub_lines,
+            columns,
+            rows,
+            notes,
+            footnote: String::new(),
+        },
+        roster,
+    ))
+}
+
+/// 对局阶段: 同一张状态表格, 用实时数据填满, 并用缓存的选人档案补 段位/胜率。
 pub fn build_live_table(
     game_data: &Value,
     champions: &ChampionsMap,
     names: &StaticNames,
+    roster: &[RosterEntry],
 ) -> anyhow::Result<DataTable> {
     let snapshot = LiveSnapshot::from_all_game_data(game_data)?;
 
@@ -1120,22 +1353,37 @@ pub fn build_live_table(
         } else {
             format!("{} ({dead})", compact_items(&player.items, names))
         };
+        // Live 数据的 championName 是 Data Dragon 别名(如 "MonkeyKing"),
+        // 用它反查数字 key, 再和选人档案按英雄配对。
+        let champion_id = champions
+            .get(&player.champion_name)
+            .and_then(|info| info.key.parse::<i64>().ok())
+            .unwrap_or(0);
+        let cached = find_roster(roster, &player.position, champion_id);
+        let rank = cached.map(|e| e.rank.clone()).unwrap_or_else(|| "-".to_string());
+        let win_rate = cached
+            .map(|e| e.win_rate.clone())
+            .unwrap_or_else(|| "-".to_string());
+        // 召唤师名: Live 数据里有就用(权威), 没有则沿用选人期缓存的
+        let summoner = if player.summoner_name.trim().is_empty() {
+            cached.map(|e| e.summoner.clone()).unwrap_or_default()
+        } else {
+            player.summoner_name.clone()
+        };
+
         TableRow {
             section: String::new(),
             cells: vec![
-                position_label(&player.position),
-                champ_zh_by_display(&player.champion_name, champions, names),
-                player.summoner_name.clone(),
-                player.kda(),
+                or_dash(&position_label(&player.position)),
+                or_dash(&champ_zh_by_display(&player.champion_name, champions, names)),
+                or_dash(&summoner),
+                or_dash(&rank),
+                or_dash(&win_rate),
+                or_dash(&player.kda()),
                 player.creep_score.to_string(),
                 player.level.to_string(),
-                names.rune(player.keystone_id, &player.keystone_name),
-                format!(
-                    "{}/{}",
-                    spell_zh_by_display(&player.spell_one),
-                    spell_zh_by_display(&player.spell_two)
-                ),
-                items,
+                or_dash(&names.rune(player.keystone_id, &player.keystone_name)),
+                or_dash(&items),
             ],
             mine_team: player.team == local_team,
             mine: !local_name.is_empty() && player.summoner_name == local_name,
@@ -1143,7 +1391,6 @@ pub fn build_live_table(
         }
     };
 
-    // 行序按分路固定(上/野/中/下/辅), 不跟着数据顺序跳
     let order_key = |row: &TableRow| -> u8 {
         match row.cells.first().map(String::as_str).unwrap_or("") {
             "上" => 0,
@@ -1233,176 +1480,10 @@ pub fn build_live_table(
             format!("我方  {}", table_objectives_zh(my_obj)),
             format!("敌方  {}", table_objectives_zh(their_obj)),
         ],
-        columns: columns_of(&LIVE_COLUMNS),
+        columns: columns_of(&MATCH_COLUMNS),
         rows,
         notes,
         footnote: build_matchup_line(&snapshot, champions, names),
-    })
-}
-
-/// 选人阶段的表格: 双方阵容 + 段位 + OP.GG 分路胜率/场次。
-/// 与对局中的表格是同一个 DataTable, 因此选人到开局界面形态完全一致。
-pub fn build_champ_select_table(
-    session: &Value,
-    champions: &ChampionsMap,
-    names: &StaticNames,
-    ranks: &HashMap<i64, String>,
-    sections_map: &HashMap<i64, Vec<BuildSection>>,
-) -> anyhow::Result<DataTable> {
-    let snapshot = ChampSelectSnapshot::from_session(session)?;
-
-    let ban_names = |bans: &[i64]| {
-        bans.iter()
-            .filter_map(|id| champ_zh_by_id(*id, champions, names))
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-
-    // OP.GG: 该英雄在该分路的胜率/场次(有就填, 没有留 "-")
-    let section_stat = |champion_id: i64, position: &str| -> (String, String) {
-        let section = sections_map.get(&champion_id).and_then(|list| {
-            list.iter()
-                .find(|s| position_label(&s.position) == position_label(position))
-                .or_else(|| list.first())
-        });
-        match section {
-            Some(s) => (s.win_rate.clone(), s.pick_count.to_string()),
-            None => ("-".to_string(), "-".to_string()),
-        }
-    };
-
-    let local_member = snapshot.local_member();
-    let local_cell = local_member.map(|m| m.cell_id).unwrap_or(-1);
-    let opponent_cell = snapshot.lane_opponent().map(|m| m.cell_id).unwrap_or(-1);
-
-    // 名字: 区服不给名字时按队伍顺序兜底成"队友1/对手2", 不留空白
-    let name_of = |member: &ChampSelectMember, index: usize, mine: bool| -> String {
-        if !member.display_name.is_empty() {
-            return member.display_name.clone();
-        }
-        if member.cell_id == local_cell {
-            return "我".to_string();
-        }
-        format!("{}{}", if mine { "队友" } else { "对手" }, index + 1)
-    };
-
-    let row_of = |member: &ChampSelectMember, index: usize, mine: bool| -> TableRow {
-        let champion = champ_zh_by_id(member.effective_champion(), champions, names)
-            .map(|zh| {
-                if member.champion_id > 0 {
-                    zh
-                } else {
-                    format!("{zh}(意向)")
-                }
-            })
-            .unwrap_or_else(|| "未选择".to_string());
-        let position = position_label(&member.assigned_position);
-        let (win_rate, games) =
-            section_stat(member.effective_champion(), &member.assigned_position);
-        TableRow {
-            section: String::new(),
-            cells: vec![
-                position,
-                champion,
-                name_of(member, index, mine),
-                ranks
-                    .get(&member.summoner_id)
-                    .cloned()
-                    .unwrap_or_else(|| "-".to_string()),
-                win_rate,
-                games,
-            ],
-            mine_team: mine,
-            mine: member.cell_id == local_cell,
-            opponent: member.cell_id == opponent_cell,
-        }
-    };
-
-    let order_key = |row: &TableRow| -> u8 {
-        match row.cells.first().map(String::as_str).unwrap_or("") {
-            "上" => 0,
-            "野" => 1,
-            "中" => 2,
-            "下" => 3,
-            "辅" => 4,
-            _ => 5,
-        }
-    };
-    let mut rows_mine: Vec<TableRow> = snapshot
-        .my_team
-        .iter()
-        .enumerate()
-        .map(|(index, member)| row_of(member, index, true))
-        .collect();
-    let mut rows_theirs: Vec<TableRow> = snapshot
-        .their_team
-        .iter()
-        .enumerate()
-        .map(|(index, member)| row_of(member, index, false))
-        .collect();
-    rows_mine.sort_by_key(order_key);
-    rows_theirs.sort_by_key(order_key);
-
-    let mut rows = vec![TableRow {
-        section: "我方".to_string(),
-        mine_team: true,
-        ..Default::default()
-    }];
-    rows.extend(rows_mine);
-    rows.push(TableRow {
-        section: "敌方".to_string(),
-        mine_team: false,
-        ..Default::default()
-    });
-    rows.extend(rows_theirs);
-
-    let mut sub_lines = vec![format!(
-        "ban 我方[{}]  敌方[{}]",
-        ban_names(&snapshot.my_bans),
-        ban_names(&snapshot.their_bans)
-    )];
-
-    let mut notes: Vec<String> = Vec::new();
-    if let Some(local) = local_member {
-        let mut status = format!("本机位置 {}", position_label(&local.assigned_position));
-        if let Some(opponent) = snapshot.lane_opponent() {
-            if let Some(champ) = champ_zh_by_id(opponent.effective_champion(), champions, names) {
-                status.push_str(&format!(
-                    " | 对位 敌方{} {champ}",
-                    position_label(&opponent.assigned_position)
-                ));
-            }
-        }
-        notes.push(status);
-
-        if let Some(bans) =
-            ban_suggestions(local.effective_champion(), sections_map, champions, names, 3)
-        {
-            notes.push(bans);
-        }
-        if let Some(opponent) = snapshot.lane_opponent() {
-            if let Some(note) = build_counter_note(
-                local.effective_champion(),
-                &local.assigned_position,
-                opponent.effective_champion(),
-                sections_map,
-                champions,
-            ) {
-                notes.push(note);
-            }
-        }
-    }
-
-    // 选人期没有"资源", 副行只留 ban; 用最后一行留白避免 UI 抖动
-    sub_lines.retain(|line| !line.trim().is_empty());
-
-    Ok(DataTable {
-        summary: "英雄选择中".to_string(),
-        sub_lines,
-        columns: columns_of(&CHAMP_SELECT_COLUMNS),
-        rows,
-        notes,
-        footnote: String::new(),
     })
 }
 
@@ -2739,11 +2820,12 @@ mod tests {
                 "中".to_string(),
                 champ.to_string(),
                 name.to_string(),
+                "铂金 II".to_string(),
+                "51.2%".to_string(),
                 kda.to_string(),
                 "180".to_string(),
                 "11".to_string(),
                 "电刑".to_string(),
-                "闪现/引燃".to_string(),
                 "暗影阔剑".to_string(),
             ],
             mine_team: true,
@@ -2754,7 +2836,7 @@ mod tests {
         let table = DataTable {
             summary: "对局中 18:32 · 比分 12:9".to_string(),
             sub_lines: vec!["我方  龙 火".to_string(), "敌方  龙 土".to_string()],
-            columns: columns_of(&LIVE_COLUMNS),
+            columns: columns_of(&MATCH_COLUMNS),
             rows: vec![
                 TableRow {
                     section: "我方".to_string(),

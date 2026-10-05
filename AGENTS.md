@@ -208,13 +208,19 @@ Rust TTS
   缺二进制一次性 warn 并降级直连 reqwest; 引擎失败原样报错不双请求。差集: 思维链/
   推理强度/流式在引擎模式不生效(UI 已标注)。见 analysis_and_design/maohou-integration.md
 - DeepSeek token 节流(prompt 与上轮完全一致时跳过请求)
-- 主窗口「对局数据」**通用表格**(用户 2026-10-05 拍板: 展示数据就用表格, 从选人到对局
-  一直用同一种形态)。数据模型 lcu/advisor.rs::DataTable(列 = title/width/emphasis,
-  行 = cells/section/mine_team/mine/opponent), UI 是 app.slint 的 DataTable 组件,
-  两个阶段只换列与数据:
-  - 选人 `build_champ_select_table`: 位/英雄/召唤师/段位/分路胜率/场次 + ban 行 + 提示行
-  - 对局 `build_live_table`: 位/英雄/召唤师/KDA/补刀/等级/基石/技能/装备, 2.5s 刷新,
-    顶部比分与双方资源, 表下金卡给对位对比(补刀/等级/净击杀差值带正负号)+金币/加点/符文
+- 主窗口「对局数据」**一张状态表格贯穿全程**(用户 2026-10-05 拍板: "用一个状态表格
+  维护选人、游戏过程中的所有关键数据")。数据模型 lcu/advisor.rs::DataTable
+  (列 = title/width/emphasis, 行 = cells/section/mine_team/mine/opponent),
+  UI 是 app.slint 的 DataTable 组件; **列在选人与对局两个阶段完全相同**:
+  `位 / 英雄 / 召唤师 / 段位 / 胜率 / KDA / 补刀 / 等级 / 基石 / 装备(弹性列)`
+  - 选人 `build_champ_select_table` → 返回 `(DataTable, Vec<RosterEntry>)`:
+    段位(ranked-stats)、OP.GG 该分路胜率已填; KDA/补刀/等级/基石显示 "-";
+    最后一列表头改成"场次"(放 OP.GG 样本量)
+  - 对局 `build_live_table(..., roster)` → 用实时数据填满, 并从 roster 按
+    **分路优先、英雄次之**补回段位/胜率; 召唤师名以 Live 数据为准, 缺失时用缓存
+  - 缓存: `AppState.match_roster`, 选人每次 session 更新都刷新,
+    **选人会话 Delete 事件清空**(绝不能把上一局的段位带进下一局)
+  - 顶部: 选人=ban 行; 对局=比分 + 双方资源。表下金卡给对位对比(带正负号)+金币/加点/符文
   - 配色: 我方行蓝条 / 敌方红条 / 我 = 金条+金底 / 对位 = 红条; 行序按分路(上/野/中/下/辅)
   - **列宽 0 = 弹性列**, 由 main.rs::resolve_flex_columns 按窗口实际宽度折算成像素;
     不能在 Slint 里靠 horizontal-stretch(Slint 的 Text 写了 width: 0px 就钉死, 整列消失)
