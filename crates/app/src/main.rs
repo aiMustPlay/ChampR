@@ -1719,8 +1719,12 @@ async fn lcu_monitor_task(
                                             s.last_auto_applied_champion = 0;
                                             s.last_applied_plan_sig.clear();
                                             s.counter_plan = None;
-                                            // 本局结束: 选人档案不能留给下一局
-                                            s.match_roster.clear();
+                                            // 注意: 这里**不能**清 match_roster —— 选人会话
+                                            // Delete 恰恰是"选人结束、正在进游戏"的时刻, 清掉就
+                                            // 会让对局里的段位/OP.GG 胜率全变 "-"(用户 2026-10-05
+                                            // 报的"队友英雄胜率拿不到"就是这个)。
+                                            // 档案会在下一次选人开始时整体刷新, 并在对局结束
+                                            // (阶段回 Idle)时清空, 见 match_lifecycle_task。
                                             s.auto_action_last = None;
                                         }
                                         let rw = runes_weak.clone();
@@ -2868,11 +2872,41 @@ async fn live_match_panel_task(
         if !auth_url.is_empty() {
             let endpoint = format!("https://{auth_url}");
             if let Ok(game_data) = live_client::fetch_all_game_data().await {
+                // 对局中也要为**全部 10 个玩家**准备 OP.GG 分路数据: 队友/对手的胜率列
+                // 就靠它(选人期缓存缺失时是唯一来源; 用户 2026-10-05 报"队友胜率拿不到")。
+                {
+                    let ids: Vec<i64> = game_data
+                        .get("allPlayers")
+                        .and_then(|value| value.as_array())
+                        .map(|players| {
+                            players
+                                .iter()
+                                .filter_map(|player| {
+                                    let alias = player.get("championName")?.as_str()?;
+                                    champions_map
+                                        .get(alias)
+                                        .and_then(|info| info.key.parse::<i64>().ok())
+                                })
+                                .filter(|id| *id > 0)
+                                .collect::<std::collections::HashSet<i64>>()
+                                .into_iter()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !ids.is_empty() {
+                        ensure_opgg_sections(&state, &ids).await;
+                    }
+                }
+                let sections_now = {
+                    let s = state.lock().unwrap();
+                    s.opgg_sections_cache.clone()
+                };
                 match advisor::build_live_table(
                     &game_data,
                     &champions_map,
                     &static_names,
                     &cached_roster,
+                    &sections_now,
                 ) {
                     Ok(built) if !built.rows.is_empty() => table = Some(built),
                     _ => {
@@ -3135,6 +3169,15 @@ async fn match_lifecycle_task(
             state.lock().unwrap().reset_match_session();
             let mut s = state.lock().unwrap();
             s.match_phase = MatchPhase::Ended;
+        } else if phase == MatchPhase::Idle && old_phase == MatchPhase::Ended {
+            // 对局彻底结束、回到大厅: 这时候才清掉选人档案(段位/OP.GG 胜率)。
+            // 不能在选人会话 Delete 时清 —— 那时正在进游戏, 清了对局里就什么都看不到。
+            let mut s = state.lock().unwrap();
+            if !s.match_roster.is_empty() {
+                info!("match roster cleared (game over, back to idle)");
+                s.match_roster.clear();
+            }
+            s.match_phase = phase.clone();
         } else if phase == MatchPhase::Idle
             && matches!(
                 old_phase,

@@ -1106,24 +1106,63 @@ fn or_dash(text: &str) -> String {
     }
 }
 
-/// 按分路/英雄把选人档案配到当前玩家身上。
-/// 先按分路(最可靠), 再按英雄 id, 最后按英雄名 —— 盲选没有分路时靠英雄名兜底。
-fn find_roster<'a>(roster: &'a [RosterEntry], position: &str, champion_id: i64) -> Option<&'a RosterEntry> {
-    let position_label_text = position_label(position);
-    roster
+/// 按英雄 id + 分路从 OP.GG 数据里取胜率; 分路对不上时退用第一条; 拿不到返回 "-"。
+fn section_win_rate(
+    sections: &HashMap<i64, Vec<BuildSection>>,
+    champion_id: i64,
+    position: &str,
+) -> String {
+    if champion_id <= 0 {
+        return "-".to_string();
+    }
+    let Some(list) = sections.get(&champion_id) else {
+        return "-".to_string();
+    };
+    let wanted = position_label(position);
+    let section = list
         .iter()
-        .find(|entry| {
-            !position_label_text.is_empty() && entry.position_label == position_label_text
-        })
-        .or_else(|| {
-            (champion_id > 0)
-                .then(|| {
-                    roster
-                        .iter()
-                        .find(|entry| entry.champion_id == champion_id && entry.champion_id > 0)
-                })
-                .flatten()
-        })
+        .find(|s| !wanted.is_empty() && position_label(&s.position) == wanted)
+        .or_else(|| list.first());
+    match section {
+        Some(s) if !s.win_rate.trim().is_empty() => s.win_rate.clone(),
+        _ => "-".to_string(),
+    }
+}
+
+/// 按分路/英雄/召唤师名把选人档案配到当前玩家身上。
+///
+/// 依次尝试: 分路(最可靠) → 英雄 id → 召唤师名。盲选没有分路时靠后两者兜底;
+/// 少了任何一层都会让"队友的段位/胜率"显示成 "-"(用户 2026-10-05 的报障)。
+fn find_roster<'a>(
+    roster: &'a [RosterEntry],
+    position: &str,
+    champion_id: i64,
+    summoner: &str,
+) -> Option<&'a RosterEntry> {
+    let position_label_text = position_label(position);
+    if !position_label_text.is_empty() {
+        if let Some(entry) = roster
+            .iter()
+            .find(|entry| entry.position_label == position_label_text)
+        {
+            return Some(entry);
+        }
+    }
+    if champion_id > 0 {
+        if let Some(entry) = roster
+            .iter()
+            .find(|entry| entry.champion_id == champion_id && entry.champion_id > 0)
+        {
+            return Some(entry);
+        }
+    }
+    let summoner = summoner.trim();
+    if !summoner.is_empty() {
+        return roster
+            .iter()
+            .find(|entry| entry.summoner.trim() == summoner);
+    }
+    None
 }
 
 /// 选人阶段: 生成状态表格 + 需要缓存到对局期的选手档案。
@@ -1324,6 +1363,7 @@ pub fn build_live_table(
     champions: &ChampionsMap,
     names: &StaticNames,
     roster: &[RosterEntry],
+    sections: &HashMap<i64, Vec<BuildSection>>,
 ) -> anyhow::Result<DataTable> {
     let snapshot = LiveSnapshot::from_all_game_data(game_data)?;
 
@@ -1359,11 +1399,17 @@ pub fn build_live_table(
             .get(&player.champion_name)
             .and_then(|info| info.key.parse::<i64>().ok())
             .unwrap_or(0);
-        let cached = find_roster(roster, &player.position, champion_id);
-        let rank = cached.map(|e| e.rank.clone()).unwrap_or_else(|| "-".to_string());
+        let cached = find_roster(roster, &player.position, champion_id, &player.summoner_name);
+        let rank = cached
+            .map(|e| e.rank.clone())
+            .filter(|text| !text.trim().is_empty() && text != "-")
+            .unwrap_or_else(|| "-".to_string());
+        // 胜率: 优先用选人档案; 档案里没有(例如 app 是开局后才启动的)就直接按英雄
+        // 查 OP.GG 分路数据 —— 否则队友/对手那一列会平白变成 "-"(用户 2026-10-05 报障)
         let win_rate = cached
             .map(|e| e.win_rate.clone())
-            .unwrap_or_else(|| "-".to_string());
+            .filter(|text| !text.trim().is_empty() && text != "-")
+            .unwrap_or_else(|| section_win_rate(sections, champion_id, &player.position));
         // 召唤师名: Live 数据里有就用(权威), 没有则沿用选人期缓存的
         let summoner = if player.summoner_name.trim().is_empty() {
             cached.map(|e| e.summoner.clone()).unwrap_or_default()
@@ -2326,6 +2372,56 @@ mod tests {
         })
     }
 
+    /// 回归: 「对局数据」表格里**每个玩家**(队友/对手)的胜率列都要有值。
+    /// 用户 2026-10-05 报"队友的英雄胜率拿不到", 根因有两个:
+    ///   1) 选人档案在"进游戏"那一刻被清空 → 段位/胜率全变 "-"
+    ///   2) 对局中只为本地英雄拉 OP.GG 数据 → 别人根本没有数据来源
+    /// 这个测试锁住第 2 条: 即使选人档案是空的, 也要按各自的英雄把胜率填上。
+    #[test]
+    fn live_table_fills_win_rate_for_every_player_without_roster() {
+        let champions = test_champions();
+        let names = test_names();
+        let data = sample_live_data();
+
+        let section = |alias: &str, champ_id: i64, position: &str, rate: &str, games: i64| {
+            (
+                champ_id,
+                vec![crate::builds::BuildSection {
+                    alias: alias.to_string(),
+                    name: alias.to_string(),
+                    position: position.to_string(),
+                    win_rate: rate.to_string(),
+                    pick_count: games,
+                    ..Default::default()
+                }],
+            )
+        };
+        // 本地 Aatrox(266, TOP) 与对手 Zed(238, TOP)
+        let sections: HashMap<i64, Vec<crate::builds::BuildSection>> =
+            HashMap::from([section("aatrox", 266, "top", "47.83%", 5528), section("zed", 238, "top", "51.21%", 5058)]);
+
+        // 关键: 档案为空(模拟"app 在对局中才启动"/缓存被清)
+        let table = build_live_table(&data, &champions, &names, &[], &sections).expect("live table");
+
+        let player_rows: Vec<&TableRow> = table
+            .rows
+            .iter()
+            .filter(|row| row.section.is_empty())
+            .collect();
+        assert_eq!(player_rows.len(), 2, "两名玩家各一行");
+        for row in &player_rows {
+            // 列序: 位/英雄/召唤师/段位/胜率/KDA/补刀/等级/基石/装备
+            assert_ne!(
+                row.cells[4], "-",
+                "胜率列不能为空: {:?}",
+                row.cells
+            );
+        }
+        let rates: Vec<&str> = player_rows.iter().map(|row| row.cells[4].as_str()).collect();
+        assert!(rates.contains(&"47.83%"), "本地英雄胜率来自 OP.GG: {rates:?}");
+        assert!(rates.contains(&"51.21%"), "对手英雄胜率同样要有: {rates:?}");
+    }
+
     #[test]
     fn live_prompt_contains_rich_state() {
         let champions = test_champions();
@@ -2890,6 +2986,44 @@ mod tests {
         assert!(foe_row.trim_start().starts_with('▲'));
     }
 
+    /// 对局里把选人档案配回玩家: 分路优先, 其次是英雄, 最后是召唤师名。
+    /// 任何一层缺失都会让队友的"段位/胜率"变成 "-"(用户 2026-10-05 报障的根因)。
+    #[test]
+    fn roster_matching_falls_back_position_then_champion_then_name() {
+        let entry = |pos: &str, champ: i64, name: &str| RosterEntry {
+            position: pos.to_string(),
+            position_label: position_label(pos),
+            champion_id: champ,
+            champion: format!("英雄{champ}"),
+            summoner: name.to_string(),
+            rank: "铂金 II".to_string(),
+            win_rate: "51.2%".to_string(),
+            games: "1240".to_string(),
+            mine_team: true,
+            mine: false,
+            opponent: false,
+        };
+        let roster = vec![
+            entry("middle", 103, "中单队友"),
+            entry("top", 266, "上单队友"),
+        ];
+
+        // 1) 分路命中(即使英雄不同 —— 换英雄/被抢线也要能配上)
+        let hit = find_roster(&roster, "middle", 0, "").expect("position match");
+        assert_eq!(hit.rank, "铂金 II");
+        assert_eq!(hit.summoner, "中单队友");
+
+        // 2) 分路不可用(盲选) → 按英雄 id
+        let hit = find_roster(&roster, "", 266, "").expect("champion match");
+        assert_eq!(hit.summoner, "上单队友");
+
+        // 3) 分路与英雄都对不上 → 按召唤师名
+        let hit = find_roster(&roster, "jungle", 999, "中单队友").expect("name match");
+        assert_eq!(hit.champion_id, 103);
+
+        // 4) 三个都不匹配 → None(调用方显示 "-")
+        assert!(find_roster(&roster, "jungle", 999, "路人").is_none());
+    }
     #[test]
     fn display_width_counts_cjk_double() {
         assert_eq!(display_width("ab"), 2);
