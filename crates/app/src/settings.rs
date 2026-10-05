@@ -45,12 +45,14 @@ pub struct Settings {
     /// 可以在设置里关。
     #[serde(default = "default_true")]
     pub auto_accept_match: bool,
-    /// 自动禁人(用户 2026-10-05 要求)。默认**关**: 禁错英雄代价高,
-    /// 必须先配好 ban_list 再打开。
-    #[serde(default)]
+    /// 自动禁人(用户 2026-10-05 要求"默认禁人")。默认**开**, 但名单为空时不会瞎禁
+    /// (什么都不做), 填了名单才真正生效 —— 即"开了也不会做错事"。
+    #[serde(default = "default_true")]
     pub auto_ban: bool,
-    /// 自动选人(先悬停, 到阈值锁定)。默认**关**, 理由同上。
-    #[serde(default)]
+    /// 自动选人(先悬停, 倒计时到阈值再锁定)。默认**开**(用户要求"默认选人"):
+    /// 优先沿用你自己悬停的英雄, 只有没悬停时才用 OP.GG 该分路最高胜率,
+    /// 且永远留 auto_pick_lock_seconds 的反悔窗口。
+    #[serde(default = "default_true")]
     pub auto_pick: bool,
     /// 优先禁用名单(英雄 id, 按顺序取第一个还没被禁的)。
     #[serde(default)]
@@ -170,8 +172,8 @@ impl Default for Settings {
             auto_apply_rune: false,
             auto_apply_builds: false,
             auto_accept_match: true,
-            auto_ban: false,
-            auto_pick: false,
+            auto_ban: default_true(),
+            auto_pick: default_true(),
             auto_ban_list: Vec::new(),
             auto_pick_list: Vec::new(),
             auto_pick_lock_seconds: default_auto_pick_lock_seconds(),
