@@ -226,6 +226,7 @@ function Start-Server {
     }
 
     if (Test-Cmd 'cargo') {
+        $script:ServerLauncherMutex = Enter-LauncherMutex 'server'
         Write-Step 'Building the backend (offline) and starting it'
         Initialize-MsvcEnvironment
         # --offline: 在线解析依赖会在网络不通时长时间挂住并霸占构建锁(见 Start-App 注释)
@@ -299,6 +300,22 @@ function Start-Crawler {
     }
 }
 
+# Only one launcher may do a given job at a time.
+# Double-clicking the icon twice starts two `run.ps1 app` processes; the second one
+# relinks target\debug\champr.exe while the first has already started it, and cargo
+# fails with "failed to remove file" (exit 101) - a confusing dialog that says nothing
+# about the real cause (2026-10-05). With the mutex the late one just exits quietly.
+function Enter-LauncherMutex {
+    param([string]$Name)
+
+    $mutex = New-Object System.Threading.Mutex($false, "Local\ChampR-Launcher-$Name")
+    if (-not $mutex.WaitOne(0)) {
+        Write-Step ("another ChampR {0} launcher is already running; nothing to do" -f $Name)
+        exit 0
+    }
+    return $mutex
+}
+
 # Close a running ChampR instead of killing it. taskkill gives exit code 1, which the
 # previous launcher process could only read as "the app failed" - that produced scary
 # false-alarm dialogs whenever the user double-clicked the icon again (2026-10-05).
@@ -363,6 +380,9 @@ function Start-App {
         throw 'cargo was not found, so the desktop client cannot be built. Install Rust first.'
     }
 
+    # Held for the whole lifetime of this launcher process (do not let it be collected).
+    $script:AppLauncherMutex = Enter-LauncherMutex 'app'
+
     Stop-RunningChampR
 
     Set-NodeMirrors
@@ -410,9 +430,20 @@ function Start-App {
     # a genuinely new dependency now fails loudly instead of hanging silently.
     # Keep comments ASCII here: PS 5.1 reads a BOM-less .ps1 as ANSI and CJK can break it.
     Write-Step 'Building the desktop client (offline)'
-    & cargo build --offline -p champr --bin champr
-    if ($LASTEXITCODE -ne 0) {
-        throw ("cargo build -p champr failed with exit code {0}" -f $LASTEXITCODE)
+    $previousBuildEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $buildOutput = & cargo build --offline -p champr --bin champr 2>&1
+    $buildCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousBuildEap
+    if ($buildCode -ne 0) {
+        $buildText = ($buildOutput | Out-String)
+        # Exit 101 with "failed to remove file" is not a code problem: the old exe is still
+        # mapped by a running process. Say that instead of showing raw cargo output.
+        if ($buildText -match 'failed to remove file|being used by another process|os error 32') {
+            throw 'target\debug\champr.exe is still locked by a running ChampR. Wait a few seconds and start the launcher again, or exit ChampR from the tray icon first.'
+        }
+        $buildOutput | Select-Object -Last 15 | ForEach-Object { Write-Warn $_ }
+        throw ("cargo build -p champr failed with exit code {0}" -f $buildCode)
     }
     # App runs hidden now, so "exit fast" must raise a dialog instead of a console tail.
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
