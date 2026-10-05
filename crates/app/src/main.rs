@@ -69,6 +69,18 @@ struct AppState {
     auto_apply_rune: bool,
     /// Auto-write recommended item builds when the pick locks in.
     auto_apply_builds: bool,
+    /// 自动禁人 / 自动选人(用户 2026-10-05)。默认关, 需先配名单再打开。
+    auto_ban: bool,
+    auto_pick: bool,
+    /// 优先禁用名单(英雄 id, 按顺序取第一个还没被禁的)
+    auto_ban_list: Vec<i64>,
+    /// 首选英雄名单(英雄 id, 取第一个)
+    auto_pick_list: Vec<i64>,
+    /// 选人自动锁定阈值(秒): 剩余时间 <= 该值就锁定; 0 = 悬停后立刻锁定
+    auto_pick_lock_seconds: f64,
+    /// 上一次已提交的自动动作(action_id, champion_id, completed)。
+    /// 避免同一个动作每来一次 session 事件就重复 PATCH。
+    auto_action_last: Option<(i64, i64, bool)>,
     /// 排队就绪自动接受对局(设置可开关, 默认关)。
     auto_accept_match: bool,
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
@@ -161,6 +173,12 @@ impl Default for AppState {
             current_assigned_position: String::new(),
             auto_apply_rune: false,
             auto_apply_builds: false,
+            auto_ban: false,
+            auto_pick: false,
+            auto_ban_list: Vec::new(),
+            auto_pick_list: Vec::new(),
+            auto_pick_lock_seconds: 0.0,
+            auto_action_last: None,
             auto_accept_match: true,
             reminder_tier: 0,
             pinned_monitor: -1,
@@ -365,6 +383,11 @@ fn main() {
     initial_state.auto_apply_rune = saved_settings.auto_apply_rune;
     initial_state.auto_apply_builds = saved_settings.auto_apply_builds;
     initial_state.auto_accept_match = saved_settings.auto_accept_match;
+    initial_state.auto_ban = saved_settings.auto_ban;
+    initial_state.auto_pick = saved_settings.auto_pick;
+    initial_state.auto_ban_list = saved_settings.auto_ban_list.clone();
+    initial_state.auto_pick_list = saved_settings.auto_pick_list.clone();
+    initial_state.auto_pick_lock_seconds = saved_settings.auto_pick_lock_seconds;
     initial_state.reminder_tier = saved_settings.reminder_tier;
     // 显示器固定: 手动配置, 启动时枚举一次; 插拔显示器后重启 app 生效。
     initial_state.pinned_monitor = saved_settings.pinned_monitor;
@@ -428,6 +451,52 @@ fn main() {
     sources_window.set_auto_apply_enabled(saved_settings.auto_apply_rune);
     sources_window.set_auto_builds_enabled(saved_settings.auto_apply_builds);
     tts_settings_window.set_auto_accept_match(saved_settings.auto_accept_match);
+    // 自动禁人/选人: 开关与名单都推给界面(名单在界面上按英雄中文名显示)
+    sources_window.set_auto_ban_enabled(saved_settings.auto_ban);
+    sources_window.set_auto_pick_enabled(saved_settings.auto_pick);
+    {
+        let names_text = |ids: &[i64]| -> String {
+            ids.iter()
+                .map(|id| {
+                    state
+                        .lock()
+                        .ok()
+                        .and_then(|s| {
+                            s.static_names
+                                .champion(&id.to_string())
+                                .map(str::to_string)
+                        })
+                        .unwrap_or_else(|| id.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let ban_text = names_text(&saved_settings.auto_ban_list);
+        let pick_text = names_text(&saved_settings.auto_pick_list);
+        sources_window.set_auto_ban_list_text(SharedString::from(&ban_text));
+        sources_window.set_auto_pick_list_text(SharedString::from(&pick_text));
+
+        let mut status = format!(
+            "自动禁人 {} | 自动选人 {}{}",
+            if saved_settings.auto_ban { "开" } else { "关" },
+            if saved_settings.auto_pick { "开" } else { "关" },
+            if saved_settings.auto_pick_lock_seconds > 0.0 {
+                format!(" | 锁定阈值 {:.0}s", saved_settings.auto_pick_lock_seconds)
+            } else {
+                " | 悬停即锁定".to_string()
+            }
+        );
+        if saved_settings.auto_ban && saved_settings.auto_ban_list.is_empty() {
+            status.push_str(" | 禁用名单为空, 自动禁人不会生效");
+        }
+        if saved_settings.auto_pick
+            && saved_settings.auto_pick_list.is_empty()
+        {
+            status.push_str(" | 首选为空, 将用你悬停的英雄或 OP.GG 该分路胜率最高");
+        }
+        sources_window.set_auto_select_status(SharedString::from(&status));
+        info!("auto champ-select: {status}");
+    }
     sources_window.set_reminder_tier(saved_settings.reminder_tier);
 
     // 显示器下拉: "不固定" + 各显示器(枚举顺序即索引)
@@ -1024,6 +1093,60 @@ fn main() {
         settings.save();
     });
 
+    // -- 自动禁人 / 自动选人(用户 2026-10-05): 开关与名单都持久化 --
+    // 关掉时顺手清掉"上次已提交"的记录, 免得下次打开误以为已提交过。
+    let state_auto_ban = state.clone();
+    sources_window.on_auto_ban_toggled(move |enabled| {
+        let mut s = state_auto_ban.lock().unwrap();
+        s.auto_ban = enabled;
+        s.auto_action_last = None;
+        drop(s);
+        let mut settings = settings::Settings::load();
+        settings.auto_ban = enabled;
+        settings.save();
+        info!("auto ban toggled: {enabled}");
+    });
+
+    let state_auto_pick = state.clone();
+    sources_window.on_auto_pick_toggled(move |enabled| {
+        let mut s = state_auto_pick.lock().unwrap();
+        s.auto_pick = enabled;
+        s.auto_action_last = None;
+        drop(s);
+        let mut settings = settings::Settings::load();
+        settings.auto_pick = enabled;
+        settings.save();
+        info!("auto pick toggled: {enabled}");
+    });
+
+    let state_ban_list = state.clone();
+    sources_window.on_auto_ban_list_edited(move |text| {
+        let ids = parse_champion_list(&text, &state_ban_list);
+        {
+            let mut s = state_ban_list.lock().unwrap();
+            s.auto_ban_list = ids.clone();
+            s.auto_action_last = None;
+        }
+        let mut settings = settings::Settings::load();
+        settings.auto_ban_list = ids.clone();
+        settings.save();
+        info!("auto ban list updated: {ids:?}");
+    });
+
+    let state_pick_list = state.clone();
+    sources_window.on_auto_pick_list_edited(move |text| {
+        let ids = parse_champion_list(&text, &state_pick_list);
+        {
+            let mut s = state_pick_list.lock().unwrap();
+            s.auto_pick_list = ids.clone();
+            s.auto_action_last = None;
+        }
+        let mut settings = settings::Settings::load();
+        settings.auto_pick_list = ids.clone();
+        settings.save();
+        info!("auto pick list updated: {ids:?}");
+    });
+
     // -- Main window: objective reminder tier (persisted) --
     let state_tier = state.clone();
     sources_window.on_reminder_tier_changed(move |tier| {
@@ -1560,6 +1683,18 @@ async fn lcu_monitor_task(
                                 // Extract champion ID from session data
                                 let session_data = data.and_then(|v| v.get("data"));
                                 let cid = extract_champion_id_from_session(session_data);
+
+                                // 自动禁人 / 自动选人(用户 2026-10-05): 决策在 lcu::autopick,
+                                // 这里只在"轮到我的动作"时提交。LCU 不许并发改同一个动作,
+                                // 所以每次 session 事件最多提交一个动作, 由下一次事件驱动下一步。
+                                if let Some(session) = session_data {
+                                    maybe_auto_champ_select_action(
+                                        &state,
+                                        session,
+                                        &current_auth_url,
+                                    )
+                                    .await;
+                                }
 
                                 // Keep the local lane in sync so rune suggestions stay matchup-aware.
                                 let assigned_position =
@@ -2431,6 +2566,174 @@ fn table_content_width(win: &SourcesWindow) -> f32 {
     let physical = win.window().size().width as f32;
     let logical = if scale > 0.0 { physical / scale } else { physical };
     (logical - TABLE_CHROME).max(320.0)
+}
+
+/// 把用户输入的英雄名单("暗裔剑魔,九尾妖狐" / "Aatrox 103")解析成英雄 id。
+/// 认三种写法: 中文名、Data Dragon 别名(英文)、数字 key。认不出来的词写日志跳过,
+/// 不静默丢弃(用户会想知道哪个词没生效)。
+fn parse_champion_list(text: &SharedString, state: &SharedState) -> Vec<i64> {
+    let (names, champions) = {
+        let Ok(s) = state.lock() else {
+            return Vec::new();
+        };
+        (s.static_names.clone(), s.champions_map.clone())
+    };
+
+    let mut out: Vec<i64> = Vec::new();
+    for raw in text.split([',', '，', ';', '；', ' ', '\n', '\t']) {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let mut found: Option<i64> = None;
+        // 数字 key / 纯数字 id
+        if let Ok(id) = token.parse::<i64>() {
+            if champions
+                .values()
+                .any(|info| info.key == token)
+                || names.champion(token).is_some()
+            {
+                found = Some(id);
+            }
+        }
+        if found.is_none() {
+            // 中文名(静态名表反查)
+            if let Some((key, _)) = names
+                .champions_cn
+                .iter()
+                .find(|(_, value)| value.as_str() == token)
+            {
+                found = key.parse::<i64>().ok();
+            }
+        }
+        if found.is_none() {
+            // Data Dragon 别名(英文)
+            if let Some(info) = champions.get(token) {
+                found = info.key.parse::<i64>().ok();
+            }
+        }
+        match found {
+            Some(id) if !out.contains(&id) => out.push(id),
+            Some(_) => {}
+            None => warn!("auto champ-select list: unknown champion '{token}', ignored"),
+        }
+    }
+    out
+}
+
+/// 自动禁人/选人的执行器。
+///
+/// 决策本身在 `lcu::autopick`(纯函数 + 单测): 只处理 actorCellId == 本机的、
+/// 正在进行且未完成的动作。这里负责读取偏好、提交 PATCH、写日志与播报。
+async fn maybe_auto_champ_select_action(
+    state: &SharedState,
+    session: &Value,
+    auth_url: &str,
+) {
+    let (prefs, names, sections) = {
+        let Ok(s) = state.lock() else {
+            return;
+        };
+        (
+            lcu::autopick::AutoPrefs {
+                auto_ban: s.auto_ban,
+                auto_pick: s.auto_pick,
+                ban_list: s.auto_ban_list.clone(),
+                pick_list: s.auto_pick_list.clone(),
+                lock_before_seconds: s.auto_pick_lock_seconds,
+            },
+            s.static_names.clone(),
+            s.opgg_sections_cache.clone(),
+        )
+    };
+    if !prefs.any_enabled() {
+        return;
+    }
+
+    let (action_id, champion_id, completed, kind, reason) =
+        match lcu::autopick::decide(session, &prefs, &names, &sections) {
+            lcu::autopick::AutoAction::None => return,
+            lcu::autopick::AutoAction::Ban {
+                action_id,
+                champion_id,
+                reason,
+            } => (action_id, champion_id, true, "ban", reason),
+            lcu::autopick::AutoAction::Pick {
+                action_id,
+                champion_id,
+                completed,
+                reason,
+            } => (action_id, champion_id, completed, "pick", reason),
+        };
+
+    if champion_id <= 0 {
+        return;
+    }
+
+    // 同一个动作的同一个提交只做一次; 等客户端回执(下一次 session 事件)再继续
+    {
+        let Ok(mut s) = state.lock() else {
+            return;
+        };
+        if s.auto_action_last == Some((action_id, champion_id, completed)) {
+            return;
+        }
+        s.auto_action_last = Some((action_id, champion_id, completed));
+    }
+
+    match lcu::lcu_api::patch_champ_select_action(auth_url, action_id, champion_id, completed).await
+    {
+        Ok(_) => {
+            info!(
+                "auto {kind}: {reason} (action={action_id} champion={champion_id} completed={completed})"
+            );
+            // 播报一句, 让用户知道工具替他做了什么(选人阶段没有游戏内干扰)
+            let say = match kind {
+                "ban" => format!("已禁用{}", champion_name_of(state, champion_id)),
+                _ if completed => format!("已锁定{}", champion_name_of(state, champion_id)),
+                _ => format!("已预选{}", champion_name_of(state, champion_id)),
+            };
+            speak_status(state, &say);
+        }
+        Err(err) => {
+            warn!("auto {kind} failed (action={action_id} champion={champion_id}): {err:?}");
+            // 失败(常见: 还没轮到我 / 客户端拒绝)要允许下一次 session 事件重试,
+            // 否则自动动作会永远卡在"已提交"状态。
+            if let Ok(mut s) = state.lock() {
+                s.auto_action_last = None;
+            }
+        }
+    }
+}
+
+/// 英雄中文名(查不到就退化成 id)。
+fn champion_name_of(state: &SharedState, champion_id: i64) -> String {
+    state
+        .lock()
+        .ok()
+        .and_then(|s| {
+            s.static_names
+                .champion(&champion_id.to_string())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| champion_id.to_string())
+}
+
+/// 短语音播报(best-effort: 没配 TTS 或失败都不影响主流程)。
+fn speak_status(state: &SharedState, text: &str) {
+    let (config, lock) = {
+        let Ok(s) = state.lock() else {
+            return;
+        };
+        (s.tts_config.clone(), s.speech_lock.clone())
+    };
+    let text = text.to_string();
+    tokio::task::spawn_blocking(move || {
+        let _guard = lock.lock().unwrap();
+        if let Err(err) = tts::speak_windows_tts_with_config(&text, &config) {
+            warn!("auto champ-select speech failed: {err}");
+        }
+    });
 }
 
 async fn greet_coach(weak: Weak<SourcesWindow>, state: SharedState) {

@@ -189,6 +189,18 @@ Rust TTS
 - 事件驱动目标提醒 TTS(一血/小龙/巢虫/先锋/男爵事件 + 刷新前 30s 倒计时), 档位: 全部/仅关键事件/静音
 - 排队就绪自动接受对局(WS 监听 lol-matchmaking/v1/ready-check, InProgress 翻转瞬间 POST
   accept 一次; 默认开(用户拍板), 设置页"对局"卡可关)
+- 自动禁人 / 自动选人(lcu/autopick.rs, 用户 2026-10-05: "继续实现默认禁人和默认选人"):
+  决策是**纯函数** `decide(session, prefs, names, sections) -> AutoAction`, 10 个单测覆盖
+  真实 session 结构; 执行器在 app 的 WS 选人事件里(watch /lol-champ-select/v1/session),
+  每次事件最多提交一个动作(LCU 不允许并发改同一动作), `auto_action_last` 去重,
+  **失败会清空去重记录**以便重试, 失败只写日志不弹窗。
+  规则: 只处理 `actorCellId == localPlayerCellId` 且 `isInProgress` 未完成的动作;
+  禁人 = 优先禁用名单里第一个还没被禁的英雄(名单空则什么都不做, 不瞎禁);
+  选人 = 首选名单 > 用户已悬停的英雄 > OP.GG 该分路胜率最高(样本 >= 300 场);
+  **先悬停(completed=false), 剩余时间 <= auto_pick_lock_seconds 才锁定**(默认 3 秒,
+  给用户反悔窗口)。两个开关默认**关**, 必须在符文页填名单再打开; 动作会 TTS 播报
+  ("已禁用X/已预选X/已锁定X")。
+  LCU 接口: `lcu_api::patch_champ_select_action(auth, action_id, champion_id, completed)`
 - 系统托盘常驻(金底深框图标): 左键召唤主窗, 右键菜单退出——独占全屏盖窗时唯一触达入口
 - LLM 统一通道(lcu/maohou.rs): provider(deepseek/lmstudio/openai 任意兼容端点)
   默认经 houmao 引擎子进程(maohou exec --no-tools), key 走子进程 env(CHAMPR_ENGINE_KEY)不上命令行;

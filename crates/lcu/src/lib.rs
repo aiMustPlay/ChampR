@@ -1,4 +1,5 @@
 pub mod advisor;
+pub mod autopick;
 pub mod builds;
 pub mod browser_sidecar;
 pub mod cmd;

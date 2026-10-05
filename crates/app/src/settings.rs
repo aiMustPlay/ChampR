@@ -45,6 +45,23 @@ pub struct Settings {
     /// 可以在设置里关。
     #[serde(default = "default_true")]
     pub auto_accept_match: bool,
+    /// 自动禁人(用户 2026-10-05 要求)。默认**关**: 禁错英雄代价高,
+    /// 必须先配好 ban_list 再打开。
+    #[serde(default)]
+    pub auto_ban: bool,
+    /// 自动选人(先悬停, 到阈值锁定)。默认**关**, 理由同上。
+    #[serde(default)]
+    pub auto_pick: bool,
+    /// 优先禁用名单(英雄 id, 按顺序取第一个还没被禁的)。
+    #[serde(default)]
+    pub auto_ban_list: Vec<i64>,
+    /// 首选英雄名单(英雄 id, 取第一个)。
+    #[serde(default)]
+    pub auto_pick_list: Vec<i64>,
+    /// 选人自动锁定阈值(秒): 剩余时间 <= 该值就锁定; 0 = 悬停后立刻锁定。
+    /// 默认 3 秒 = 先悬停, 选人倒计时最后 3 秒才锁定, 留一个反悔窗口。
+    #[serde(default = "default_auto_pick_lock_seconds")]
+    pub auto_pick_lock_seconds: f64,
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
     #[serde(default)]
     pub reminder_tier: i32,
@@ -75,6 +92,11 @@ pub struct Settings {
 
 fn default_ai_backend() -> String {
     "maohou".to_string()
+}
+
+fn default_auto_pick_lock_seconds() -> f64 {
+    // 先悬停, 最后 3 秒锁定: 用户还有机会自己改英雄
+    3.0
 }
 
 fn default_true() -> bool {
@@ -148,6 +170,11 @@ impl Default for Settings {
             auto_apply_rune: false,
             auto_apply_builds: false,
             auto_accept_match: true,
+            auto_ban: false,
+            auto_pick: false,
+            auto_ban_list: Vec::new(),
+            auto_pick_list: Vec::new(),
+            auto_pick_lock_seconds: default_auto_pick_lock_seconds(),
             reminder_tier: 0,
             pinned_monitor: default_pinned_monitor(),
             lmstudio_base_url: default_lmstudio_base_url(),

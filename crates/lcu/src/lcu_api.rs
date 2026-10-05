@@ -105,6 +105,44 @@ pub async fn get_champ_select_session(auth_url: &str) -> Result<Value, LcuError>
     make_get_request(&endpoint).await
 }
 
+/// 提交一个选人/禁人动作(PATCH /lol-champ-select/v1/session/actions/{id})。
+///
+/// - `completed=false` = 只是悬停(hover), 还能改
+/// - `completed=true`  = 锁定(禁人立即生效; 选人则定下英雄)
+///
+/// 只允许对自己的动作调用 —— 调用方(autopick)必须先用 actorCellId 过滤。
+pub async fn patch_champ_select_action(
+    auth_url: &str,
+    action_id: i64,
+    champion_id: i64,
+    completed: bool,
+) -> Result<(), LcuError> {
+    let base = lcu_endpoint(auth_url);
+    let client = make_client();
+    let body = serde_json::json!({
+        "championId": champion_id,
+        "completed": completed,
+    });
+    let resp = client
+        .patch(format!(
+            "{base}/lol-champ-select/v1/session/actions/{action_id}"
+        ))
+        .version(reqwest::Version::HTTP_2)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(LcuError::APIError(format!(
+            "champ-select action {action_id} failed: HTTP {status} {text}"
+        )));
+    }
+    Ok(())
+}
+
 pub async fn get_gameflow_phase(auth_url: &str) -> Result<String, LcuError> {
     let endpoint = format!("{auth_url}/lol-gameflow/v1/gameflow-phase");
     let phase: Value = make_get_request(&endpoint).await?;
