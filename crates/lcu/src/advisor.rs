@@ -1656,6 +1656,17 @@ fn build_matchup_line(
 
     let you = champ_zh_by_display(&local.champion_name, champions, names);
     let foe = champ_zh_by_display(&opponent.champion_name, champions, names);
+    // 召唤师技能: 表格列被"段位/胜率"占满, 在这里补回来(对线判断 TP/引燃 很关键)
+    let my_spells = format!(
+        "{}/{}",
+        spell_zh_by_display(&local.spell_one),
+        spell_zh_by_display(&local.spell_two)
+    );
+    let foe_spells = format!(
+        "{}/{}",
+        spell_zh_by_display(&opponent.spell_one),
+        spell_zh_by_display(&opponent.spell_two)
+    );
     let cs_diff = local.creep_score - opponent.creep_score;
     let level_diff = local.level - opponent.level;
     let kill_diff = (local.kills - local.deaths) - (opponent.kills - opponent.deaths);
@@ -1669,7 +1680,7 @@ fn build_matchup_line(
     };
 
     let mut line = format!(
-        "我 {you} Lv{} {} {}刀 · 对位 {foe} Lv{} {} {}刀 · 补刀 {} · 等级 {} · 净击杀 {}",
+        "我 {you} {my_spells} Lv{} {} {}刀 · 对位 {foe} {foe_spells} Lv{} {} {}刀 · 补刀 {} · 等级 {} · 净击杀 {}",
         local.level,
         local.kda(),
         local.creep_score,

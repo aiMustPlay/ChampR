@@ -212,7 +212,7 @@ fn main() {
                 slint::SharedString::from("近期击杀 17:42 阿卡丽→劫; 18:05 盲僧→豹女; 18:21 劫→洛"),
             ])));
             ui.set_table_footnote(slint::SharedString::from(
-                "我 阿卡丽 Lv12 8/2/3 196刀 · 对位 劫 Lv12 6/1/2 188刀 · 补刀 +8 · 等级 +0 · 净击杀 +1",
+                "我 阿卡丽 闪现/引燃 Lv12 8/2/3 196刀 · 对位 劫 闪现/引燃 Lv12 6/1/2 188刀 · 补刀 +8 · 等级 +0 · 净击杀 +1",
             ));
             ui.set_output_tab(1);
             ui.set_copy_status(slint::SharedString::from("已复制 对局数据 14 行"));
