@@ -653,6 +653,8 @@ export component SourcesWindow inherits Window {
     in-out property <[string]> counter-cand-names: [];
 
     callback open-tts-settings-clicked();
+    // 打开日志文件(启动器不再留常驻控制台, 界面里要能直接看日志)
+    callback open-log-clicked();
     callback llm-assistance-changed(bool);
     callback reminder-tier-changed(int);
     callback coach-send-clicked();
@@ -864,6 +866,13 @@ export component SourcesWindow inherits Window {
             Rectangle {
                 horizontal-stretch: 1;
                 height: 1px;
+            }
+            GoldButton {
+                text: "📜 日志";
+                width: 108px;
+                clicked => {
+                    root.open-log-clicked();
+                }
             }
             GoldButton {
                 text: "⚙ 设置";

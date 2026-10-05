@@ -18,11 +18,42 @@ if (Test-Path $cargoBin) {
 function Write-Step {
     param([string]$Message)
     Write-Host "==> $Message" -ForegroundColor Cyan
+    Add-Content -Path (Join-Path $RepoRoot '.cache\launcher.log') -Value ("==> " + $Message) -ErrorAction SilentlyContinue
 }
 
 function Write-Warn {
     param([string]$Message)
     Write-Host "!! $Message" -ForegroundColor Yellow
+    Add-Content -Path (Join-Path $RepoRoot '.cache\launcher.log') -Value ("!! " + $Message) -ErrorAction SilentlyContinue
+}
+
+# Hidden launcher = nobody sees the console. Failures must surface on their own,
+# so show a dialog box with the reason and the tail of the relevant log.
+# ASCII-only comments here: PS 5.1 reads a BOM-less .ps1 as ANSI, CJK can break parsing.
+function Show-Failure {
+    param(
+        [string]$Title,
+        [string]$Message,
+        [string]$LogPath
+    )
+
+    $details = ""
+    if ($LogPath -and (Test-Path $LogPath)) {
+        $tail = Get-Content $LogPath -Tail 20 -ErrorAction SilentlyContinue
+        if ($tail) {
+            $details = "`n`n--- $LogPath ---`n" + ($tail -join "`n")
+        }
+    }
+    $full = $Message + $details
+    Add-Content -Path (Join-Path $RepoRoot '.cache\launcher.log') -Value ("FAIL " + $Title + ": " + $Message) -ErrorAction SilentlyContinue
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        [System.Windows.Forms.MessageBox]::Show($full, $Title, 'OK', 'Error') | Out-Null
+    }
+    catch {
+        Write-Warn $Message
+    }
 }
 
 function Test-Cmd {
@@ -179,7 +210,8 @@ function Start-Server {
         }
         $serverExe = Join-Path $RepoRoot 'target\debug\server.exe'
         Write-Step "Running $serverExe"
-        & $serverExe
+        # Hidden console: keep the output in a file so failures can be shown in a dialog.
+        & $serverExe *>> (Join-Path $RepoRoot '.cache\server.log')
         if ($LASTEXITCODE -ne 0) {
             throw ("server failed with exit code {0}" -f $LASTEXITCODE)
         }
@@ -271,26 +303,19 @@ function Start-App {
     if ($LASTEXITCODE -ne 0) {
         throw ("cargo build -p champr failed with exit code {0}" -f $LASTEXITCODE)
     }
-    # 直接跑二进制而不是 cargo run: cargo run 会作为父进程常驻, 也多一层"哪个 bin"的坑
-    $appExe = Join-Path $RepoRoot 'target\debug\champr.exe'
-    Write-Step "Starting $appExe"
-    $appLog = Join-Path $RepoRoot '.cache\champr.log'
+    # App runs hidden now, so "exit fast" must raise a dialog instead of a console tail.
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    & $appExe
+    $appExe = Join-Path $RepoRoot 'target\debug\champr.exe'
+    $appLog = Join-Path $RepoRoot '.cache\champr.log'
+    Write-Step "Starting $appExe"
+    # Redirect the app console output into a file: there is no visible console any more.
+    & $appExe *>> (Join-Path $RepoRoot '.cache\app-console.log')
     $appCode = $LASTEXITCODE
     $stopwatch.Stop()
 
-    # Fast exit = something is wrong (a normal session never ends in 5s). Print the
-    # tail of the app log and keep the console open, so the user never gets a window
-    # that just flashes and vanishes with no explanation (repeated report 2026-10-04).
+    # Fast exit = something is wrong (a normal session never ends within 5s).
     if ($stopwatch.Elapsed.TotalSeconds -lt 5) {
-        Write-Step ("champr exited after {0:N1}s with code {1}" -f $stopwatch.Elapsed.TotalSeconds, $appCode)
-        if (Test-Path $appLog) {
-            Write-Step "Last lines of $appLog :"
-            Get-Content $appLog -Tail 25 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
-        }
-        Write-Step 'Window will stay open for 30s so you can read this.'
-        Start-Sleep -Seconds 30
+        Show-Failure -Title 'ChampR exited immediately' -Message ("champr exited after {0:N1}s with code {1}" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog
     }
 
     if ($appCode -ne 0) {
@@ -312,6 +337,9 @@ try {
     }
 }
 catch {
-    Write-Warn ("Execution failed: {0}" -f $_.Exception.Message)
+    $reason = $_.Exception.Message
+    Write-Warn ("Execution failed: {0}" -f $reason)
+    $logForCommand = if ($Command -eq 'server') { '.cache\server.log' } else { '.cache\champr.log' }
+    Show-Failure -Title ("ChampR {0} failed" -f $Command) -Message $reason -LogPath (Join-Path $RepoRoot $logForCommand)
     exit 1
 }

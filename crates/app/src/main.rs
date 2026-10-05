@@ -468,6 +468,20 @@ fn main() {
         }
     });
 
+    // 打开日志: 启动器不再留常驻控制台, 日志只在 .cache/champr.log 里, 所以给个入口。
+    sources_window.on_open_log_clicked(|| {
+        let log = std::path::Path::new(".cache/champr.log");
+        if !log.exists() {
+            warn!("log file not found: {}", log.display());
+            return;
+        }
+        // explorer 用默认程序打开(通常记事本); 不弹控制台
+        match std::process::Command::new("explorer").arg(log).spawn() {
+            Ok(_) => info!("opened log file {}", log.display()),
+            Err(err) => warn!("failed to open log file: {err}"),
+        }
+    });
+
     let llm_assistance_state = state.clone();
     let llm_assistance_weak = sources_window.as_weak();
     let llm_assistance_handle = rt_handle_ref.clone();
