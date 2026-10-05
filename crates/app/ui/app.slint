@@ -255,6 +255,30 @@ component TitleBar inherits Rectangle {
     height: 34px;
     background: Tokens.c-page;
 
+    // 拖动层: 必须声明在按钮**之前** —— Slint 里后声明的元素在上面, 声明在按钮之后
+    // 会把最小化/关闭的点击全吃掉(2026-10-05 用户报"窗口无法操作")。
+    TouchArea {
+        property <length> last-x: 0px;
+        property <length> last-y: 0px;
+
+        double-clicked => {
+            root.maximize-clicked();
+        }
+        // 只用 Slint 自己的 pressed 当闸门: 按住才移动窗口。
+        // 之前不判断按键状态, 光标划过标题栏也触发 move → 窗口跟着光标抖、
+        // 光标闪烁、什么都点不中(用户 2026-10-05 报的正是这个现象)。
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                self.last-x = self.mouse-x;
+                self.last-y = self.mouse-y;
+            } else if (event.kind == PointerEventKind.move && self.pressed) {
+                root.drag(self.mouse-x - self.last-x, self.mouse-y - self.last-y);
+                self.last-x = self.mouse-x;
+                self.last-y = self.mouse-y;
+            }
+        }
+    }
+
     HorizontalLayout {
         padding-left: Tokens.s-md;
         padding-right: Tokens.s-xs;
@@ -292,25 +316,6 @@ component TitleBar inherits Rectangle {
             danger: true;
             clicked => {
                 root.close-clicked();
-            }
-        }
-    }
-
-    // 拖动层: 声明在按钮之前(在下面), 按钮区域的点击由按钮自己吃掉
-    TouchArea {
-        property <length> last-x: 0px;
-        property <length> last-y: 0px;
-        double-clicked => {
-            root.maximize-clicked();
-        }
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down) {
-                self.last-x = self.mouse-x;
-                self.last-y = self.mouse-y;
-            } else if (event.kind == PointerEventKind.move) {
-                root.drag(self.mouse-x - self.last-x, self.mouse-y - self.last-y);
-                self.last-x = self.mouse-x;
-                self.last-y = self.mouse-y;
             }
         }
     }
