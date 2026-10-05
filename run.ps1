@@ -9,6 +9,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Captured here on purpose: inside a function $MyInvocation describes the FUNCTION call,
+# so $MyInvocation.MyCommand.Path is null there and self-elevation silently failed
+# (2026-10-05: "elevation refused ... ArgumentList is null").
+$ScriptPath = $MyInvocation.MyCommand.Path
 
 $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 if (Test-Path $cargoBin) {
@@ -27,25 +31,29 @@ function Write-Warn {
     Add-Content -Path (Join-Path $RepoRoot '.cache\launcher.log') -Value ("!! " + $Message) -ErrorAction SilentlyContinue
 }
 
-# Hidden launcher = nobody sees the console. Failures must surface on their own,
-# so show a dialog box with the reason and the tail of the relevant log.
+# Hidden launcher = nobody sees the console, so a real failure must surface on its own.
+# Keep the dialog SHORT: one sentence plus an optional tiny log tail for genuine build
+# errors. A 20-line log dump that has nothing to do with the problem is just noise and
+# got the user (rightly) angry on 2026-10-05.
 # ASCII-only comments here: PS 5.1 reads a BOM-less .ps1 as ANSI, CJK can break parsing.
 function Show-Failure {
     param(
         [string]$Title,
         [string]$Message,
-        [string]$LogPath
+        [string]$LogPath,
+        # 0 = no log attachment; only genuine build errors pass a small number
+        [int]$TailLines = 0
     )
 
-    $details = ""
-    if ($LogPath -and (Test-Path $LogPath)) {
-        $tail = Get-Content $LogPath -Tail 20 -ErrorAction SilentlyContinue
+    Add-Content -Path (Join-Path $RepoRoot '.cache\launcher.log') -Value ("FAIL " + $Title + ": " + $Message) -ErrorAction SilentlyContinue
+
+    $full = $Message
+    if ($TailLines -gt 0 -and $LogPath -and (Test-Path $LogPath)) {
+        $tail = Get-Content $LogPath -Tail $TailLines -ErrorAction SilentlyContinue
         if ($tail) {
-            $details = "`n`n--- $LogPath ---`n" + ($tail -join "`n")
+            $full = $Message + "`n`n" + ($tail -join "`n")
         }
     }
-    $full = $Message + $details
-    Add-Content -Path (Join-Path $RepoRoot '.cache\launcher.log') -Value ("FAIL " + $Title + ": " + $Message) -ErrorAction SilentlyContinue
 
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
@@ -54,6 +62,52 @@ function Show-Failure {
     catch {
         Write-Warn $Message
     }
+}
+
+# One short question only. Returns $true when the user agrees.
+function Request-YesNo {
+    param([string]$Title, [string]$Message)
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        $result = [System.Windows.Forms.MessageBox]::Show($Message, $Title, 'OKCancel', 'Question')
+        return ($result -eq [System.Windows.Forms.DialogResult]::OK)
+    }
+    catch {
+        Write-Warn $Message
+        return $false
+    }
+}
+
+# Is the built binary older than the sources (i.e. a rebuild would change it)?
+# Do not compare exe vs process start: the process runs that very exe, so it never looks stale.
+function Test-AppBinaryStale {
+    $exe = Join-Path $RepoRoot 'target\debug\champr.exe'
+    if (-not (Test-Path $exe)) {
+        return $true
+    }
+    $exeTime = (Get-Item $exe).LastWriteTime
+    $patterns = @(
+        'crates\app\src\*.rs',
+        'crates\app\src\**\*.rs',
+        'crates\app\ui\*.slint',
+        'crates\app\build.rs',
+        'crates\app\Cargo.toml',
+        'crates\lcu\src\*.rs',
+        'crates\lcu\src\**\*.rs',
+        'crates\lcu\Cargo.toml',
+        'Cargo.toml',
+        'Cargo.lock'
+    )
+    foreach ($pattern in $patterns) {
+        $files = Get-ChildItem $pattern -File -ErrorAction SilentlyContinue
+        foreach ($file in $files) {
+            if ($file.LastWriteTime -gt $exeTime) {
+                return $true
+            }
+        }
+    }
+    return $false
 }
 
 function Test-Cmd {
@@ -229,7 +283,7 @@ function Start-Server {
         $script:ServerLauncherMutex = Enter-LauncherMutex 'server'
         Write-Step 'Building the backend (offline) and starting it'
         Initialize-MsvcEnvironment
-        # --offline: 在线解析依赖会在网络不通时长时间挂住并霸占构建锁(见 Start-App 注释)
+        # --offline: online dependency resolution hangs while holding the build lock (see Start-App)
         & cargo build --offline -p server
         if ($LASTEXITCODE -ne 0) {
             throw ("cargo build -p server failed with exit code {0}" -f $LASTEXITCODE)
@@ -321,10 +375,15 @@ function Enter-LauncherMutex {
 # false-alarm dialogs whenever the user double-clicked the icon again (2026-10-05).
 # A window close makes the app exit with code 0, so the old launcher stays quiet.
 # ASCII-only comments: PS 5.1 parses a BOM-less .ps1 as ANSI.
+# Try to close a running ChampR so the newest build can be linked.
+# Returns $true when nothing is running any more (or nothing was running), $false when an
+# instance is still alive - typically one started elevated while this launcher is not, and
+# a normal-privilege process simply cannot touch it (that is why the shortcut's missing
+# RunAs flag kept producing a useless dialog on 2026-10-05).
 function Stop-RunningChampR {
     $running = @(Get-Process champr -ErrorAction SilentlyContinue)
     if ($running.Count -eq 0) {
-        return
+        return $true
     }
 
     Write-Step ("Closing {0} running ChampR instance(s) to load the newest build" -f $running.Count)
@@ -336,32 +395,45 @@ function Stop-RunningChampR {
             Write-Warn ("CloseMainWindow failed for pid {0}" -f $proc.Id)
         }
     }
-
-    $deadline = (Get-Date).AddSeconds(8)
-    while ((Get-Date) -lt $deadline) {
-        if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -eq 0) {
-            break
-        }
-        Start-Sleep -Milliseconds 250
+    if (Wait-ProcessesGone 5) {
+        return $true
     }
 
-    # Still there (hung, or started elevated so we cannot touch it): force it, but say so
+    # Graceful close did not work: the running build may predate the close-requested
+    # handler, or it ignores the message. Force it if we are allowed to.
     Get-Process champr -ErrorAction SilentlyContinue | ForEach-Object {
         Write-Warn ("forcing exit of champr pid {0}" -f $_.Id)
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
+    return (Wait-ProcessesGone 3)
+}
 
-    # Wait until the exe is actually writable again: relinking while the image is still
-    # mapped fails with exit code 101 ("failed to remove file"), which used to surface as
-    # a confusing "build failed" dialog (2026-10-05).
+# Wait until no champr process is left (at most N seconds). $true = all gone.
+function Wait-ProcessesGone {
+    param([int]$Seconds)
+
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
+        if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -eq 0) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return (@(Get-Process champr -ErrorAction SilentlyContinue).Count -eq 0)
+}
+
+# Wait for the exe to be unlocked (relinking while it is mapped fails with exit 101).
+function Wait-AppBinaryUnlocked {
+    param([int]$Seconds)
+
     $exePath = Join-Path $RepoRoot 'target\debug\champr.exe'
-    $unlockDeadline = (Get-Date).AddSeconds(10)
-    while ((Get-Date) -lt $unlockDeadline) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Get-Date) -lt $deadline) {
         if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -eq 0) {
             try {
                 $stream = [System.IO.File]::Open($exePath, 'Open', 'ReadWrite', 'None')
                 $stream.Close()
-                return
+                return $true
             }
             catch {
                 # still mapped; keep waiting
@@ -369,11 +441,28 @@ function Stop-RunningChampR {
         }
         Start-Sleep -Milliseconds 250
     }
+    return $false
+}
 
-    if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -gt 0) {
-        throw 'ChampR is still running and cannot be closed (it may have been started as administrator). Exit it from the tray icon, then start this launcher again.'
+# Re-run the same command elevated (one UAC prompt). Needed when the old instance
+# was started elevated and normal privileges cannot close it.
+function Restart-LauncherElevated {
+    param([string]$Command)
+
+    Write-Step ("relaunching this launcher elevated so it can close the running ChampR ({0})" -f $Command)
+    try {
+        Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', $ScriptPath, $Command
+        ) | Out-Null
+        return $true
+    }
+    catch {
+        Write-Warn ("elevation refused: {0}" -f $_.Exception.Message)
+        return $false
     }
 }
+
 
 function Start-App {
     if (-not (Test-Cmd 'cargo')) {
@@ -383,7 +472,37 @@ function Start-App {
     # Held for the whole lifetime of this launcher process (do not let it be collected).
     $script:AppLauncherMutex = Enter-LauncherMutex 'app'
 
-    Stop-RunningChampR
+    # Already running? Only interfere when the binary on disk is older than the sources,
+    # i.e. when the user really would get an outdated UI. Otherwise say nothing at all -
+    # a dialog for "it is already running" is noise (2026-10-05: user got a wall of
+    # unrelated log lines and was, rightly, annoyed).
+    $runningCount = @(Get-Process champr -ErrorAction SilentlyContinue).Count
+    if ($runningCount -gt 0) {
+        if (-not (Test-AppBinaryStale)) {
+            Write-Step 'ChampR is already running the current build; nothing to do'
+            exit 0
+        }
+
+        if (Stop-RunningChampR) {
+            if (-not (Wait-AppBinaryUnlocked 10)) {
+                Write-Warn 'binary still locked after closing ChampR; continuing anyway'
+            }
+        }
+        else {
+            # Still alive: almost always an elevated instance we cannot touch.
+            $answer = Request-YesNo -Title 'ChampR is running' -Message (
+                "ChampR is running an older build. It must be closed to load the new one.`n`n" +
+                "OK  = retry elevated (one UAC prompt)`nCancel = keep it as it is"
+            )
+            if ($answer) {
+                if (Restart-LauncherElevated -Command 'app') {
+                    exit 0
+                }
+            }
+            Write-Step 'user kept the running instance; nothing to do'
+            exit 0
+        }
+    }
 
     Set-NodeMirrors
     Push-Location $RepoRoot
@@ -440,7 +559,7 @@ function Start-App {
         # Exit 101 with "failed to remove file" is not a code problem: the old exe is still
         # mapped by a running process. Say that instead of showing raw cargo output.
         if ($buildText -match 'failed to remove file|being used by another process|os error 32') {
-            throw 'target\debug\champr.exe is still locked by a running ChampR. Wait a few seconds and start the launcher again, or exit ChampR from the tray icon first.'
+            throw 'ChampR is still running (started elevated?) so its exe cannot be replaced. Exit ChampR from the tray icon, then start this launcher again.'
         }
         $buildOutput | Select-Object -Last 15 | ForEach-Object { Write-Warn $_ }
         throw ("cargo build -p champr failed with exit code {0}" -f $buildCode)
@@ -483,7 +602,7 @@ function Start-App {
             Write-Step ("champr was closed {0:N1}s after a healthy start; not reporting a failure" -f $stopwatch.Elapsed.TotalSeconds)
         }
         else {
-            Show-Failure -Title 'ChampR exited immediately' -Message ("champr exited after {0:N1}s with code {1} before showing its window" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog
+            Show-Failure -Title 'ChampR failed to start' -Message ("champr exited after {0:N1}s with code {1} before showing its window" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog -TailLines 8
         }
     }
 
@@ -509,6 +628,6 @@ catch {
     $reason = $_.Exception.Message
     Write-Warn ("Execution failed: {0}" -f $reason)
     $logForCommand = if ($Command -eq 'server') { '.cache\server.log' } else { '.cache\champr.log' }
-    Show-Failure -Title ("ChampR {0} failed" -f $Command) -Message $reason -LogPath (Join-Path $RepoRoot $logForCommand)
+    Show-Failure -Title ("ChampR {0} failed" -f $Command) -Message $reason -LogPath (Join-Path $RepoRoot $logForCommand) -TailLines 8
     exit 1
 }
