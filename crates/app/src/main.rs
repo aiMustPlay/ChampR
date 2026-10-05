@@ -2267,23 +2267,25 @@ fn live_local_champion_id(game_data: &Value, champions: &ChampionsMap) -> i64 {
 ///   3. 新拿到的数据落盘, 下次启动直接命中
 async fn ensure_opgg_sections(state: &SharedState, champion_ids: &[i64]) {
     let now = std::time::Instant::now();
+    // "每个英雄只查一次": 规则在 cache::select_fetches 里, 有单测锁住
     let missing: Vec<i64> = {
         let s = state.lock().unwrap();
-        champion_ids
-            .iter()
-            .copied()
-            .filter(|id| *id > 0 && !s.opgg_sections_cache.contains_key(id))
-            .filter(|id| {
-                s.opgg_attempt_at
-                    .get(id)
-                    .map(|at| now.duration_since(*at).as_secs() >= cache::RETRY_AFTER_SECS)
-                    .unwrap_or(true)
-            })
-            .collect()
+        cache::select_fetches(
+            champion_ids,
+            |id| s.opgg_sections_cache.contains_key(&id),
+            |id| s.opgg_attempt_at.get(&id).copied(),
+            now,
+        )
     };
     if missing.is_empty() {
         return;
     }
+    // 让日志能自证"每个英雄只查一次": 只有真正要抓的才会出现, 之后每次都是空的
+    info!(
+        "OP.GG 抓取 {} 个英雄(其余走缓存, 不再重复查): {:?}",
+        missing.len(),
+        missing
+    );
 
     {
         // 先记下尝试时间: 即使失败也进冷却, 避免每 tick 重试
@@ -2862,14 +2864,13 @@ async fn live_match_panel_task(
     loop {
         interval.tick().await;
 
-        let (auth_url, champions_map, static_names, ranks, sections_map) = {
+        let (auth_url, champions_map, static_names, ranks) = {
             let s = state.lock().unwrap();
             (
                 s.auth_url.clone(),
                 s.champions_map.clone(),
                 s.static_names.clone(),
                 s.ranked_stats_cache.clone(),
-                s.opgg_sections_cache.clone(),
             )
         };
 
@@ -2937,6 +2938,41 @@ async fn live_match_panel_task(
             }
             if table.is_none() {
                 if let Ok(session) = lcu_api::get_champ_select_session(&endpoint).await {
+                    // 用户 2026-10-05: "每个选定英雄的时候就查一次即可" —— 有人选/悬停英雄的
+                    // 那一刻就抓那个英雄(每英雄一次, 之后走缓存), 而不是等别处顺手抓。
+                    {
+                        let picked: Vec<i64> = session
+                            .get("myTeam")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .chain(
+                                session
+                                    .get("theirTeam")
+                                    .and_then(Value::as_array)
+                                    .into_iter()
+                                    .flatten(),
+                            )
+                            .filter_map(|member| {
+                                let locked =
+                                    member.get("championId").and_then(Value::as_i64).unwrap_or(0);
+                                let intent = member
+                                    .get("championPickIntent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0);
+                                let id = if locked > 0 { locked } else { intent };
+                                (id > 0).then_some(id)
+                            })
+                            .collect();
+                        if !picked.is_empty() {
+                            ensure_opgg_sections(&state, &picked).await;
+                        }
+                    }
+                    // 用刚抓到的数据重建表格(否则会晚一个 tick 才显示)
+                    let sections_map = {
+                        let s = state.lock().unwrap();
+                        s.opgg_sections_cache.clone()
+                    };
                     match advisor::build_champ_select_table(
                         &session,
                         &champions_map,

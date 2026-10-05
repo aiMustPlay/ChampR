@@ -28,6 +28,34 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// 决定本轮要抓哪些英雄 —— 用户 2026-10-05 的要求:
+/// **每个玩家选定英雄时查一次, 之后就不要再查**。规则:
+///   - 已有数据(本次运行或磁盘缓存) → 永不重查
+///   - 从没试过 → 查
+///   - 试过但没拿到数据 → `RETRY_AFTER_SECS` 内不再试(否则每 2.5s 白跑一次)
+///
+/// 抽成纯函数是为了直接单测"只查一次"这条规则。
+pub fn select_fetches<F, G>(
+    ids: &[i64],
+    has_data: F,
+    last_attempt: G,
+    now: std::time::Instant,
+) -> Vec<i64>
+where
+    F: Fn(i64) -> bool,
+    G: Fn(i64) -> Option<std::time::Instant>,
+{
+    ids.iter()
+        .copied()
+        .filter(|id| *id > 0)
+        .filter(|id| !has_data(*id))
+        .filter(|id| match last_attempt(*id) {
+            None => true,
+            Some(at) => now.duration_since(at).as_secs() >= RETRY_AFTER_SECS,
+        })
+        .collect()
+}
+
 fn cache_dir() -> PathBuf {
     let mut dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     dir.push("champr");
@@ -254,6 +282,43 @@ mod tests {
         assert_eq!(back.personal_rate, "55%");
         assert_eq!(back.personal_record, "120胜98负");
         assert_eq!(back.at, entry.at);
+    }
+
+    /// 用户要求: "每个选定英雄的时候就查一次即可" —— 这条规则必须被测试锁住。
+    #[test]
+    fn each_champion_is_fetched_once_then_never_again() {
+        let now = std::time::Instant::now();
+        let ids = [157, 266, 103];
+
+        // 1) 第一次: 全都要查
+        assert_eq!(select_fetches(&ids, |_| false, |_| None, now), vec![157, 266, 103]);
+
+        // 2) 已经有数据 → 一个都不再查(哪怕早就过了冷却)
+        let cached = |id: i64| id == 157 || id == 266;
+        assert_eq!(
+            select_fetches(&ids, cached, |_| None, now),
+            vec![103],
+            "已有数据的不许重查"
+        );
+
+        // 3) 抓失败的: 冷却期内不重试
+        let just_tried = |_: i64| Some(now - std::time::Duration::from_secs(5));
+        assert!(
+            select_fetches(&ids, |_| false, just_tried, now).is_empty(),
+            "5 秒前刚试过, 不该再试"
+        );
+
+        // 4) 冷却过后才允许重试(数据仍然没有)
+        let long_ago =
+            |_: i64| Some(now - std::time::Duration::from_secs(RETRY_AFTER_SECS + 1));
+        assert_eq!(
+            select_fetches(&ids, |_| false, long_ago, now),
+            vec![157, 266, 103],
+            "冷却结束后才允许重试"
+        );
+
+        // 5) 非法 id 不查
+        assert!(select_fetches(&[0, -1], |_| false, |_| None, now).is_empty());
     }
 
     #[test]
