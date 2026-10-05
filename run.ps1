@@ -211,9 +211,15 @@ function Start-Server {
         $serverExe = Join-Path $RepoRoot 'target\debug\server.exe'
         Write-Step "Running $serverExe"
         # Hidden console: keep the output in a file so failures can be shown in a dialog.
+        # EAP=Continue for the same reason as in Start-App: redirecting stderr of a native
+        # command under ErrorActionPreference=Stop throws NativeCommandError in PS 5.1.
+        $previousEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
         & $serverExe *>> (Join-Path $RepoRoot '.cache\server.log')
-        if ($LASTEXITCODE -ne 0) {
-            throw ("server failed with exit code {0}" -f $LASTEXITCODE)
+        $serverCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousEap
+        if ($serverCode -ne 0) {
+            throw ("server failed with exit code {0}" -f $serverCode)
         }
         return
     }
@@ -254,10 +260,49 @@ function Start-Crawler {
     }
 }
 
+# Close a running ChampR instead of killing it. taskkill gives exit code 1, which the
+# previous launcher process could only read as "the app failed" - that produced scary
+# false-alarm dialogs whenever the user double-clicked the icon again (2026-10-05).
+# A window close makes the app exit with code 0, so the old launcher stays quiet.
+# ASCII-only comments: PS 5.1 parses a BOM-less .ps1 as ANSI.
+function Stop-RunningChampR {
+    $running = @(Get-Process champr -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) {
+        return
+    }
+
+    Write-Step ("Closing {0} running ChampR instance(s) to load the newest build" -f $running.Count)
+    foreach ($proc in $running) {
+        try {
+            $null = $proc.CloseMainWindow()
+        }
+        catch {
+            Write-Warn ("CloseMainWindow failed for pid {0}" -f $proc.Id)
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds(6)
+    while ((Get-Date) -lt $deadline) {
+        if (@(Get-Process champr -ErrorAction SilentlyContinue).Count -eq 0) {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    # Still there (hung or no window): force it, but say so in the log
+    Get-Process champr -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Warn ("forcing exit of champr pid {0}" -f $_.Id)
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 500
+}
+
 function Start-App {
     if (-not (Test-Cmd 'cargo')) {
         throw 'cargo was not found, so the desktop client cannot be built. Install Rust first.'
     }
+
+    Stop-RunningChampR
 
     Set-NodeMirrors
     Push-Location $RepoRoot
@@ -266,15 +311,20 @@ function Start-App {
             Write-Step 'Installing Node dependencies (pnpm install)'
             Invoke-Pnpm -PnpmArgs @('install')
         }
-        # Rebuild the sidecar only when sources are newer than the output: running tsc
-        # on every launch wasted 10-30s and looked like "double-click does nothing".
+        # Rebuild the sidecar only when sources are newer than the built output: running
+        # tsc on every launch wasted 10-30s and looked like "double-click does nothing".
+        # Compare newest source FILE against newest output FILE - the dist directory's
+        # own mtime does not change when a file inside it is rewritten, which made the
+        # earlier check always true (rebuilt on every single launch, 2026-10-05).
         $webDist = 'packages\deepseek-web\dist'
         $webSrc = 'packages\deepseek-web\src'
         $needsWeb = -not (Test-Path $webDist)
         if (-not $needsWeb -and (Test-Path $webSrc)) {
             $newestSrc = Get-ChildItem $webSrc -Recurse -File -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($newestSrc -and $newestSrc.LastWriteTime -gt (Get-Item $webDist).LastWriteTime) {
+            $newestDist = Get-ChildItem $webDist -Recurse -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($newestSrc -and (-not $newestDist -or $newestSrc.LastWriteTime -gt $newestDist.LastWriteTime)) {
                 $needsWeb = $true
             }
         }
@@ -305,20 +355,47 @@ function Start-App {
     }
     # App runs hidden now, so "exit fast" must raise a dialog instead of a console tail.
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    # The app logs to .cache/champr.log itself; the console copy is redirected for the
+    # record. EAP must be Continue around it: with Stop, redirecting a native command's
+    # stderr makes PS 5.1 throw NativeCommandError and the launcher reports a bogus
+    # failure whose message is just the app's first log line (hit twice, 2026-10-05).
     $appExe = Join-Path $RepoRoot 'target\debug\champr.exe'
     $appLog = Join-Path $RepoRoot '.cache\champr.log'
     Write-Step "Starting $appExe"
-    # Redirect the app console output into a file: there is no visible console any more.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     & $appExe *>> (Join-Path $RepoRoot '.cache\app-console.log')
     $appCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousEap
     $stopwatch.Stop()
 
-    # Fast exit = something is wrong (a normal session never ends within 5s).
+    # Fast exit only counts as a failure when the app never got as far as showing its
+    # window (checked in the current run's own log section). A quick exit AFTER a healthy
+    # "main window placed" means somebody closed or restarted it, which is not an error
+    # and must not raise a modal dialog (false alarms on 2026-10-05).
     if ($stopwatch.Elapsed.TotalSeconds -lt 5) {
-        Show-Failure -Title 'ChampR exited immediately' -Message ("champr exited after {0:N1}s with code {1}" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog
+        $healthyStart = $false
+        if (Test-Path $appLog) {
+            $tail = @(Get-Content $appLog -Tail 80 -ErrorAction SilentlyContinue)
+            $startIndex = -1
+            for ($i = $tail.Count - 1; $i -ge 0; $i--) {
+                if ($tail[$i] -match 'ChampR starting') { $startIndex = $i; break }
+            }
+            if ($startIndex -ge 0) {
+                $section = $tail[$startIndex..($tail.Count - 1)]
+                $healthyStart = [bool]($section | Select-String -Pattern 'main window placed' -Quiet)
+            }
+        }
+
+        if ($healthyStart) {
+            Write-Step ("champr was closed {0:N1}s after a healthy start; not reporting a failure" -f $stopwatch.Elapsed.TotalSeconds)
+        }
+        else {
+            Show-Failure -Title 'ChampR exited immediately' -Message ("champr exited after {0:N1}s with code {1} before showing its window" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog
+        }
     }
 
-    if ($appCode -ne 0) {
+    if ($appCode -ne 0 -and $appCode -ne 1) {
         throw ("champr exited with code {0} (log: {1})" -f $appCode, $appLog)
     }
 }

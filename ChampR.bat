@@ -16,14 +16,11 @@ if not errorlevel 1 (
   timeout /t 1 >nul
 )
 
-rem The running app locks target\debug\champr.exe, so cargo cannot relink it.
-tasklist /fi "imagename eq champr.exe" 2>nul | find /i "champr.exe" >nul
-if not errorlevel 1 (
-  taskkill /im champr.exe /f >nul 2>&1
-  timeout /t 2 >nul
-)
+rem The running app is closed by run.ps1 (Stop-RunningChampR) with a graceful window
+rem close, NOT taskkill: taskkill reports exit code 1, which the previous launcher can
+rem only read as a failure and turns into a false-alarm dialog on every re-launch.
 
-rem Restart the backend as well, so server-side changes take effect on every launch.
+rem Restart the backend too, so server-side changes take effect on every launch.
 tasklist /fi "imagename eq server.exe" 2>nul | find /i "server.exe" >nul
 if not errorlevel 1 (
   taskkill /im server.exe /f >nul 2>&1
