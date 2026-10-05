@@ -7,14 +7,11 @@ rem   * the app has a LOG button in its footer that opens .cache\champr.log
 rem Keep every comment and string here ASCII: cmd.exe parses .bat in GBK, and a CJK
 rem comment line gets shredded into garbage commands (real incident 2026-10-03).
 
-rem A cargo left over from an earlier launch can sit forever on a network resolve while
-rem holding the target build lock, after which every launch hangs silently on
-rem "Blocking waiting for file lock on build directory" (real incident 2026-10-04).
-tasklist /fi "imagename eq cargo.exe" 2>nul | find /i "cargo.exe" >nul
-if not errorlevel 1 (
-  taskkill /im cargo.exe /f >nul 2>&1
-  timeout /t 1 >nul
-)
+rem DO NOT kill cargo.exe here. Doing that killed the build of a launcher that was
+rem already working: the user double-clicks again, this batch taskkills every cargo,
+rem and the first launcher sees its own build die with exit code 1 and reports a bogus
+rem "build failed" (incident 2026-10-05). Stale cargos are handled in run.ps1, which
+rem only reaps ones that have been alive for minutes, never an active build.
 
 rem The running app is closed by run.ps1 (Stop-RunningChampR) with a graceful window
 rem close, NOT taskkill: taskkill reports exit code 1, which the previous launcher can

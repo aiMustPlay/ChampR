@@ -548,6 +548,16 @@ function Start-App {
     # (real incident 2026-10-04). Offline builds use the local cache and take seconds;
     # a genuinely new dependency now fails loudly instead of hanging silently.
     # Keep comments ASCII here: PS 5.1 reads a BOM-less .ps1 as ANSI and CJK can break it.
+    # Reap only cargos that are clearly stale (alive for minutes). Killing every cargo -
+    # which ChampR.bat used to do - also killed a build that another launcher was running,
+    # and that launcher then reported a bogus build failure (incident 2026-10-05).
+    Get-Process cargo -ErrorAction SilentlyContinue | Where-Object {
+        ((Get-Date) - $_.StartTime) -gt [TimeSpan]::FromMinutes(5)
+    } | ForEach-Object {
+        Write-Warn ("reaping stale cargo pid {0} (alive since {1:HH:mm:ss})" -f $_.Id, $_.StartTime)
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Step 'Building the desktop client (offline)'
     $previousBuildEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -561,7 +571,20 @@ function Start-App {
         if ($buildText -match 'failed to remove file|being used by another process|os error 32') {
             throw 'ChampR is still running (started elevated?) so its exe cannot be replaced. Exit ChampR from the tray icon, then start this launcher again.'
         }
-        $buildOutput | Select-Object -Last 15 | ForEach-Object { Write-Warn $_ }
+        # Real build errors: show them, error lines first, and never the app log (that one
+        # belongs to the app, not to cargo - showing it was pure noise, incident 2026-10-05).
+        $lines = @($buildOutput | ForEach-Object { "$_" })
+        $errors = @($lines | Where-Object { $_ -match '^\s*error|^error\[|-->|panicked|cannot find|expected' })
+        if ($errors.Count -eq 0) {
+            $errors = @($lines | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -Last 10)
+        }
+        if ($errors.Count -eq 0) {
+            $errors = @('cargo exited without printing an error - the build was probably interrupted (another launcher, Task Manager, or a killed cargo process).')
+        }
+        $detail = ($errors | Select-Object -First 12) -join "`n"
+        $detail | ForEach-Object { Write-Warn $_ }
+        $script:FailureShown = $true
+        Show-Failure -Title 'ChampR build failed' -Message ("cargo build -p champr exited with code {0}:`n`n{1}" -f $buildCode, $detail)
         throw ("cargo build -p champr failed with exit code {0}" -f $buildCode)
     }
     # App runs hidden now, so "exit fast" must raise a dialog instead of a console tail.
@@ -602,6 +625,7 @@ function Start-App {
             Write-Step ("champr was closed {0:N1}s after a healthy start; not reporting a failure" -f $stopwatch.Elapsed.TotalSeconds)
         }
         else {
+            $script:FailureShown = $true
             Show-Failure -Title 'ChampR failed to start' -Message ("champr exited after {0:N1}s with code {1} before showing its window" -f $stopwatch.Elapsed.TotalSeconds, $appCode) -LogPath $appLog -TailLines 8
         }
     }
@@ -628,6 +652,8 @@ catch {
     $reason = $_.Exception.Message
     Write-Warn ("Execution failed: {0}" -f $reason)
     $logForCommand = if ($Command -eq 'server') { '.cache\server.log' } else { '.cache\champr.log' }
-    Show-Failure -Title ("ChampR {0} failed" -f $Command) -Message $reason -LogPath (Join-Path $RepoRoot $logForCommand) -TailLines 8
+    if (-not $script:FailureShown) {
+        Show-Failure -Title ("ChampR {0} failed" -f $Command) -Message $reason -LogPath (Join-Path $RepoRoot $logForCommand) -TailLines 8
+    }
     exit 1
 }
