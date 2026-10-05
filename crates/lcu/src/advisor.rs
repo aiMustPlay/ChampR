@@ -1047,6 +1047,262 @@ fn panel_player_line(player: &LivePlayer, champions: &ChampionsMap, names: &Stat
     )
 }
 
+/// 主窗「对局数据」表格的一行(一个玩家)。UI 只负责画, 换算全在这里。
+#[derive(Debug, Clone, Default)]
+pub struct LiveTableRow {
+    /// 分路: 上/野/中/下/辅(未知为 "-")
+    pub position: String,
+    /// 英雄中文名
+    pub champion: String,
+    pub summoner: String,
+    /// "4/1/6"
+    pub kda: String,
+    /// 补刀
+    pub cs: String,
+    pub level: String,
+    /// 基石符文中文名
+    pub keystone: String,
+    /// 召唤师技能 "闪现/传送"
+    pub spells: String,
+    /// 装备中文名(最多 4 件, 便宜的可读性优先)
+    pub items: String,
+    /// 本行是不是"我"
+    pub is_local: bool,
+    /// 本行是不是我的对位
+    pub is_opponent: bool,
+    /// 阵亡中显示的倒计时, 例如 "阵亡 7s"; 活着为空
+    pub dead: String,
+}
+
+/// 整张实时表格(数据全部来自 Live Client Data, 2.5s 刷新一次, 不走 LLM)。
+#[derive(Debug, Clone, Default)]
+pub struct LiveTable {
+    /// "对局中 18:32 · 比分 12:9"
+    pub summary: String,
+    /// 我方资源 "龙:火,风 · 巢虫1 · 先锋0 · 男爵0 · 塔3"
+    pub objectives_mine: String,
+    pub objectives_theirs: String,
+    pub rows_mine: Vec<LiveTableRow>,
+    pub rows_theirs: Vec<LiveTableRow>,
+    /// 我的金币/加点/符文 + 近期击杀, 表格下方的小字
+    pub notes: Vec<String>,
+    /// 我与对位的对比一行(补刀/等级/击杀差), 表格下方的重点
+    pub matchup: String,
+}
+
+/// 把 Live Client Data 的 allgamedata 变成表格行。失败(没进对局/字段缺失)时返回 Err,
+/// 调用方回退到文字面板。
+pub fn build_live_table(
+    game_data: &Value,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+) -> anyhow::Result<LiveTable> {
+    let snapshot = LiveSnapshot::from_all_game_data(game_data)?;
+
+    let local = snapshot.local_player();
+    let local_team = local.map(|p| p.team.as_str()).unwrap_or("ORDER");
+    let enemy_team = if local_team == "ORDER" { "CHAOS" } else { "ORDER" };
+    let (my_obj, their_obj) = if local_team == "ORDER" {
+        (&snapshot.order, &snapshot.chaos)
+    } else {
+        (&snapshot.chaos, &snapshot.order)
+    };
+
+    let local_name = local.map(|p| p.summoner_name.clone()).unwrap_or_default();
+    let opponent_name = snapshot
+        .lane_opponent()
+        .map(|p| p.summoner_name.clone())
+        .unwrap_or_default();
+
+    let row_of = |player: &LivePlayer| -> LiveTableRow {
+        LiveTableRow {
+            position: position_label(&player.position),
+            champion: champ_zh_by_display(&player.champion_name, champions, names),
+            summoner: player.summoner_name.clone(),
+            kda: player.kda(),
+            cs: player.creep_score.to_string(),
+            level: player.level.to_string(),
+            keystone: names.rune(player.keystone_id, &player.keystone_name),
+            spells: format!(
+                "{}/{}",
+                spell_zh_by_display(&player.spell_one),
+                spell_zh_by_display(&player.spell_two)
+            ),
+            items: compact_items(&player.items, names),
+            is_local: !local_name.is_empty() && player.summoner_name == local_name,
+            is_opponent: !opponent_name.is_empty() && player.summoner_name == opponent_name,
+            dead: if player.is_dead {
+                format!("阵亡 {:.0}s", player.respawn_timer)
+            } else {
+                String::new()
+            },
+        }
+    };
+
+    // 行序按分路固定(上/野/中/下/辅), 不跟着数据顺序跳
+    let mut rows_mine: Vec<LiveTableRow> = snapshot
+        .team_players(local_team)
+        .into_iter()
+        .map(row_of)
+        .collect();
+    let mut rows_theirs: Vec<LiveTableRow> = snapshot
+        .team_players(enemy_team)
+        .into_iter()
+        .map(row_of)
+        .collect();
+    let order_key = |row: &LiveTableRow| -> u8 {
+        match row.position.as_str() {
+            "上" => 0,
+            "野" => 1,
+            "中" => 2,
+            "下" => 3,
+            "辅" => 4,
+            _ => 5,
+        }
+    };
+    rows_mine.sort_by_key(order_key);
+    rows_theirs.sort_by_key(order_key);
+
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(active) = snapshot.active.as_ref() {
+        let rune_names: Vec<String> = active
+            .full_runes
+            .iter()
+            .map(|(id, display)| names.rune(*id, display))
+            .collect();
+        notes.push(format!(
+            "我的金币 {:.0} | 加点 Q{}W{}E{}R{} | 符文 {}",
+            active.current_gold,
+            active.q_level,
+            active.w_level,
+            active.e_level,
+            active.r_level,
+            rune_names.join(",")
+        ));
+    }
+    if !snapshot.recent_kills.is_empty() {
+        let resolve = |name: &str| -> String {
+            snapshot
+                .players
+                .iter()
+                .find(|p| p.summoner_name == name)
+                .map(|p| champ_zh_by_display(&p.champion_name, champions, names))
+                .unwrap_or_else(|| name.to_string())
+        };
+        let kills: Vec<String> = snapshot
+            .recent_kills
+            .iter()
+            .map(|event| {
+                format!(
+                    "{} {}→{}",
+                    format_game_time(event.event_time),
+                    resolve(&event.killer),
+                    resolve(&event.victim)
+                )
+            })
+            .collect();
+        notes.push(format!("近期击杀 {}", kills.join("; ")));
+    }
+
+    Ok(LiveTable {
+        summary: format!(
+            "{} {} · 比分 {}:{}",
+            if snapshot.ended { "已结束" } else { "对局中" },
+            format_game_time(snapshot.game_time),
+            snapshot.team_kills(local_team),
+            snapshot.team_kills(enemy_team)
+        ),
+        objectives_mine: table_objectives_zh(my_obj),
+        objectives_theirs: table_objectives_zh(their_obj),
+        rows_mine,
+        rows_theirs,
+        notes,
+        matchup: build_matchup_line(&snapshot, champions, names),
+    })
+}
+
+/// 对位对比: "我 阿卡丽 Lv12 8/2/3 196刀 · 对位 劫 Lv12 6/1/2 188刀 · 补刀 +8 · 击杀 +2"
+/// 差值带正负号, 让人一眼看出领先还是落后。
+fn build_matchup_line(
+    snapshot: &LiveSnapshot,
+    champions: &ChampionsMap,
+    names: &StaticNames,
+) -> String {
+    let (Some(local), Some(opponent)) = (snapshot.local_player(), snapshot.lane_opponent()) else {
+        return String::new();
+    };
+
+    let you = champ_zh_by_display(&local.champion_name, champions, names);
+    let foe = champ_zh_by_display(&opponent.champion_name, champions, names);
+    let cs_diff = local.creep_score - opponent.creep_score;
+    let level_diff = local.level - opponent.level;
+    let kill_diff = (local.kills - local.deaths) - (opponent.kills - opponent.deaths);
+
+    let signed = |value: i64| -> String {
+        if value > 0 {
+            format!("+{value}")
+        } else {
+            value.to_string()
+        }
+    };
+
+    let mut line = format!(
+        "我 {you} Lv{} {} {}刀 · 对位 {foe} Lv{} {} {}刀 · 补刀 {} · 等级 {} · 净击杀 {}",
+        local.level,
+        local.kda(),
+        local.creep_score,
+        opponent.level,
+        opponent.kda(),
+        opponent.creep_score,
+        signed(cs_diff),
+        signed(level_diff),
+        signed(kill_diff),
+    );
+    if opponent.is_dead {
+        line.push_str(&format!(" · 对位阵亡 {:.0}s", opponent.respawn_timer));
+    }
+    line
+}
+
+/// 表格用的资源摘要: 比 prompt 版短, 只留能在 1 行里读完的信息。
+fn table_objectives_zh(obj: &TeamObjectives) -> String {
+    let dragons = obj
+        .dragons
+        .iter()
+        .map(|d| dragon_zh(d))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "龙 {} · 巢虫 {} · 先锋 {} · 男爵 {} · 塔 {}",
+        if dragons.is_empty() { "0".to_string() } else { dragons },
+        obj.void_grubs,
+        obj.heralds,
+        obj.barons,
+        obj.turrets
+    )
+}
+
+/// 装备列: 最多 4 件, 保留完整中文名(表格里装备列最宽, 截断反而看不懂)。
+fn compact_items(items: &[(i64, i64)], names: &StaticNames) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (id, count) in items.iter().take(4) {
+        let name = names
+            .item(*id)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("装备{id}"));
+        if *count > 1 {
+            parts.push(format!("{}x{}", name, count));
+        } else {
+            parts.push(name);
+        }
+    }
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 /// Compact live match summary for the main window's match panel.
 pub fn build_live_panel_text(
     game_data: &Value,

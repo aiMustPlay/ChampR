@@ -659,9 +659,17 @@ mod tests {
         );
     }
 
+    /// 幂等的测试日志初始化。
+    /// femme::with_level 在 logger 已被设置时会 panic(SetLoggerError) —— 这两个测试
+    /// 并行跑时第二个必然炸, 于是 `cargo test -p lcu` 随机变红(2026-10-05 发现)。
+    fn init_test_logging() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| femme::with_level(femme::LevelFilter::Info));
+    }
+
     #[tokio::test]
     async fn apply_builds_for_riot_server() -> anyhow::Result<()> {
-        femme::with_level(femme::LevelFilter::Info);
+        init_test_logging();
 
         let source = String::from("op.gg");
         download_tar_and_apply_for_source(&source, Some(String::from(".local_builds")), false)
@@ -672,7 +680,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_builds_for_tencent_server() -> anyhow::Result<()> {
-        femme::with_level(femme::LevelFilter::Info);
+        init_test_logging();
 
         let source = String::from("op.gg");
         download_tar_and_apply_for_source(&source, Some(String::from(".local_builds")), true)

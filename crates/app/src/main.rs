@@ -2336,16 +2336,26 @@ async fn live_match_panel_task(
         };
 
         let mut text = String::new();
+        // 实时表格: 一进对局就用它替换文字面板(用户 2026-10-05 要求"关键数据表格")
+        let mut table: Option<advisor::LiveTable> = None;
         if !auth_url.is_empty() {
             let endpoint = format!("https://{auth_url}");
             if let Ok(game_data) = live_client::fetch_all_game_data().await {
-                if let Ok(rendered) =
-                    advisor::build_live_panel_text(&game_data, &champions_map, &static_names)
-                {
-                    text = rendered;
+                // 表格优先; 表格行拿不到(字段缺失)时退回原来的文字面板
+                match advisor::build_live_table(&game_data, &champions_map, &static_names) {
+                    Ok(built) if !built.rows_mine.is_empty() || !built.rows_theirs.is_empty() => {
+                        table = Some(built);
+                    }
+                    _ => {
+                        if let Ok(rendered) =
+                            advisor::build_live_panel_text(&game_data, &champions_map, &static_names)
+                        {
+                            text = rendered;
+                        }
+                    }
                 }
             }
-            if text.is_empty() {
+            if table.is_none() && text.is_empty() {
                 if let Ok(session) = lcu_api::get_champ_select_session(&endpoint).await {
                     if let Ok(rendered) = advisor::build_champ_select_panel_text(
                         &session,
@@ -2360,14 +2370,84 @@ async fn live_match_panel_task(
             }
         }
 
-        if text != last_text {
-            last_text = text.clone();
+        // 变化检测: 表格用"内容签名"比较, 免得每 2.5s 都重建模型
+        let signature = match &table {
+            Some(t) => format!(
+                "T|{}|{}|{}|{}|{}|{}",
+                t.summary,
+                t.objectives_mine,
+                t.objectives_theirs,
+                t.rows_mine
+                    .iter()
+                    .map(|r| format!("{}{}{}{}{}{}", r.champion, r.kda, r.cs, r.level, r.items, r.dead))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                t.rows_theirs
+                    .iter()
+                    .map(|r| format!("{}{}{}{}{}{}", r.champion, r.kda, r.cs, r.level, r.items, r.dead))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                t.notes.join(";")
+            ),
+            None => format!("X|{text}"),
+        };
+
+        if signature != last_text {
+            last_text = signature;
             // 对局快照出了新内容 → 输出区切到对局页(手动静默期内不抢)
             activate_output_tab(&weak, &state, UI_TAB_MATCH);
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = weak.upgrade() {
                     win.set_live_match_text(SharedString::from(text));
+                    match table {
+                        Some(table) => {
+                            let to_rows = |rows: Vec<advisor::LiveTableRow>| {
+                                slint::ModelRc::new(slint::VecModel::from(
+                                    rows.into_iter()
+                                        .map(|r| LiveRow {
+                                            pos: SharedString::from(r.position),
+                                            champion: SharedString::from(r.champion),
+                                            summoner: SharedString::from(r.summoner),
+                                            kda: SharedString::from(r.kda),
+                                            cs: SharedString::from(r.cs),
+                                            level: SharedString::from(r.level),
+                                            keystone: SharedString::from(r.keystone),
+                                            spells: SharedString::from(r.spells),
+                                            items: SharedString::from(r.items),
+                                            dead: SharedString::from(r.dead),
+                                            mine: r.is_local,
+                                            opponent: r.is_opponent,
+                                        })
+                                        .collect::<Vec<_>>(),
+                                ))
+                            };
+                            win.set_live_summary(SharedString::from(table.summary));
+                            win.set_live_objectives_mine(SharedString::from(table.objectives_mine));
+                            win.set_live_objectives_theirs(SharedString::from(
+                                table.objectives_theirs,
+                            ));
+                            win.set_live_matchup(SharedString::from(table.matchup));
+                            win.set_live_notes(slint::ModelRc::new(slint::VecModel::from(
+                                table
+                                    .notes
+                                    .into_iter()
+                                    .map(SharedString::from)
+                                    .collect::<Vec<_>>(),
+                            )));
+                            win.set_live_rows_mine(to_rows(table.rows_mine));
+                            win.set_live_rows_theirs(to_rows(table.rows_theirs));
+                        }
+                        None => {
+                            // 回到文字面板(选人阶段 / 数据不可用)
+                            win.set_live_rows_mine(slint::ModelRc::new(slint::VecModel::from(
+                                Vec::<LiveRow>::new(),
+                            )));
+                            win.set_live_rows_theirs(slint::ModelRc::new(slint::VecModel::from(
+                                Vec::<LiveRow>::new(),
+                            )));
+                        }
+                    }
                 }
             });
         }

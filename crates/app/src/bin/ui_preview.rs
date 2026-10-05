@@ -129,6 +129,61 @@ fn main() {
             ui.set_live_match_text(slint::SharedString::from(
                 "比分 12:9 | 小龙 2:1 | 先锋 1:0 | 男爵 0:0\n我 4/1/6 补刀 182 金币 8.2k\n对位 1/3/2 补刀 145",
             ));
+            // 「对局数据」表格的演示数据: 默认 Tab 就是它(见下面 set_output_tab)
+            let row = |pos: &str,
+                       champ: &str,
+                       name: &str,
+                       kda: &str,
+                       cs: &str,
+                       lv: &str,
+                       rune: &str,
+                       spells: &str,
+                       items: &str,
+                       dead: &str,
+                       mine: bool,
+                       opp: bool| LiveRow {
+                pos: slint::SharedString::from(pos),
+                champion: slint::SharedString::from(champ),
+                summoner: slint::SharedString::from(name),
+                kda: slint::SharedString::from(kda),
+                cs: slint::SharedString::from(cs),
+                level: slint::SharedString::from(lv),
+                keystone: slint::SharedString::from(rune),
+                spells: slint::SharedString::from(spells),
+                items: slint::SharedString::from(items),
+                dead: slint::SharedString::from(dead),
+                mine,
+                opponent: opp,
+            };
+            ui.set_live_rows_mine(slint::ModelRc::new(slint::VecModel::from(vec![
+                row("上", "杰斯", "对手上单#1234", "2/3/1", "145", "9", "征服者", "闪现/传送", "三相之力 铁板靴", "", false, false),
+                row("野", "盲僧", "打野爸爸#8888", "4/1/6", "182", "11", "征服者", "闪现/惩戒", "渴血战斧 铁板靴 长者之誓", "", false, false),
+                row("中", "阿卡丽", "测试召唤师#1234", "8/2/3", "196", "12", "电刑", "闪现/引燃", "暗影阔剑 法师之靴 巫妖之祸", "", true, false),
+                row("下", "卡莎", "ADC#6666", "5/4/2", "210", "11", "致命节奏", "闪现/治疗", "无穷之刃 狂徒铠甲", "", false, false),
+                row("辅", "洛", "辅助#2333", "1/5/9", "32", "8", "守护者", "闪现/引燃", "骑士之誓 圣物之盾", "阵亡 7s", false, false),
+            ])));
+            ui.set_live_rows_theirs(slint::ModelRc::new(slint::VecModel::from(vec![
+                row("上", "剑魔", "敌方上单#1111", "3/2/0", "160", "10", "征服者", "闪现/传送", "斯特拉克的挑战护手", "", false, false),
+                row("野", "豹女", "敌方打野#2222", "2/4/5", "150", "10", "电刑", "闪现/惩戒", "冰霜之牙", "", false, false),
+                row("中", "劫", "敌方中单#3333", "6/1/2", "188", "12", "电刑", "闪现/引燃", "幽梦之灵 法师之靴", "", false, true),
+                row("下", "厄斐琉斯", "敌方ADC#4444", "4/3/1", "205", "11", "致命节奏", "闪现/治疗", "无尽之刃 幻影之舞", "", false, false),
+                row("辅", "牛头", "敌方辅助#5555", "0/6/7", "28", "8", "余震", "闪现/引燃", "骑士之誓 山脉之戒", "", false, false),
+            ])));
+            ui.set_live_summary(slint::SharedString::from("对局中 18:32 · 比分 12:9"));
+            ui.set_live_objectives_mine(slint::SharedString::from(
+                "龙 火,风 · 巢虫 1 · 先锋 0 · 男爵 0 · 塔 3",
+            ));
+            ui.set_live_objectives_theirs(slint::SharedString::from(
+                "龙 土 · 巢虫 0 · 先锋 1 · 男爵 0 · 塔 2",
+            ));
+            ui.set_live_matchup(slint::SharedString::from(
+                "我 阿卡丽 Lv12 8/2/3 196刀 · 对位 劫 Lv12 6/1/2 188刀 · 补刀 +8 · 等级 +0 · 净击杀 +1",
+            ));
+            ui.set_live_notes(slint::ModelRc::new(slint::VecModel::from(vec![
+                slint::SharedString::from("我的金币 8420 | 加点 Q5W3E2R1 | 符文 电刑,猛然冲击,眼球收集器,贪欲猎手,气定神闲,致命一击"),
+                slint::SharedString::from("近期击杀 17:42 阿卡丽→劫; 18:05 盲僧→豹女; 18:21 劫→洛"),
+            ])));
+            ui.set_output_tab(1);
             prepare!(ui, get_win_main_w, get_win_main_h);
         }
     }
