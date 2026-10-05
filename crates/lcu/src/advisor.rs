@@ -1221,6 +1221,134 @@ pub fn build_live_table(
     })
 }
 
+/// 把表格渲染成可直接复制的纯文本(粘到聊天/记事本里仍然对齐)。
+///
+/// 中文占两格宽, 所以按"显示宽度"补齐, 不能简单用字符数。
+pub fn render_live_table_text(table: &LiveTable) -> String {
+    // (标题, 宽度) —— 与 UI 的 Tokens.tw-* 列宽同一个数量级即可, 纯文本按字符算
+    let cols: [(&str, usize); 9] = [
+        ("位", 4),
+        ("英雄", 14),
+        ("召唤师", 18),
+        ("KDA", 10),
+        ("补刀", 6),
+        ("等级", 5),
+        ("基石", 14),
+        ("技能", 12),
+        ("装备", 0), // 0 = 最后一列不补齐
+    ];
+
+    let mut out = String::new();
+    out.push_str(&table.summary);
+    out.push('\n');
+    out.push_str(&format!(
+        "我方  {}\n敌方  {}\n",
+        table.objectives_mine, table.objectives_theirs
+    ));
+
+    let header: Vec<String> = cols
+        .iter()
+        .map(|(title, width)| pad_display(title, *width))
+        .collect();
+    // 数据行前面有 ★/▲ 标记列, 表头要留出同样一格, 否则整列错 1 格
+    out.push_str(&format!(" {}", header.join(" ").trim_end()));
+    out.push('\n');
+
+    let row_line = |row: &LiveTableRow| -> String {
+        let mark = if row.is_local {
+            "★"
+        } else if row.is_opponent {
+            "▲"
+        } else {
+            " "
+        };
+        let cells = [
+            pad_display(&row.position, 4),
+            pad_display(&row.champion, 14),
+            pad_display(&row.summoner, 18),
+            pad_display(&row.kda, 10),
+            pad_display(&row.cs, 6),
+            pad_display(&row.level, 5),
+            pad_display(&row.keystone, 14),
+            pad_display(&row.spells, 12),
+            if row.dead.is_empty() {
+                row.items.clone()
+            } else {
+                format!("{} ({})", row.items, row.dead)
+            },
+        ];
+        format!("{mark}{}", cells.join(" ").trim_end())
+    };
+
+    out.push_str("我方\n");
+    for row in &table.rows_mine {
+        out.push_str(&row_line(row));
+        out.push('\n');
+    }
+    out.push_str("敌方\n");
+    for row in &table.rows_theirs {
+        out.push_str(&row_line(row));
+        out.push('\n');
+    }
+
+    for note in &table.notes {
+        out.push_str(note);
+        out.push('\n');
+    }
+    if !table.matchup.is_empty() {
+        out.push_str(&table.matchup);
+        out.push('\n');
+    }
+    out
+}
+
+/// 显示宽度: CJK/全角算 2 格, 其它算 1 格。
+fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|c| {
+            let cp = c as u32;
+            let wide = matches!(cp,
+                0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
+                | 0xFE30..=0xFE6F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6
+                | 0x1F300..=0x1FAFF)
+                || (0x20000..=0x3FFFD).contains(&cp);
+            if wide { 2 } else { 1 }
+        })
+        .sum()
+}
+
+/// 按显示宽度补齐; width == 0 表示不补。
+/// 超宽时截断成 "…"(中文两格宽, 所以截断也要按显示宽度算), 否则后面所有列都会右移。
+fn pad_display(text: &str, width: usize) -> String {
+    if width == 0 {
+        return text.to_string();
+    }
+    let current = display_width(text);
+    if current == width {
+        return text.to_string();
+    }
+    if current < width {
+        return format!("{}{}", text, " ".repeat(width - current));
+    }
+
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = display_width(&ch.to_string());
+        if used + w > width.saturating_sub(1) {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    let used_after = display_width(&out);
+    if used_after < width {
+        out.push_str(&" ".repeat(width - used_after));
+    }
+    out
+}
+
 /// 对位对比: "我 阿卡丽 Lv12 8/2/3 196刀 · 对位 劫 Lv12 6/1/2 188刀 · 补刀 +8 · 击杀 +2"
 /// 差值带正负号, 让人一眼看出领先还是落后。
 fn build_matchup_line(
@@ -2387,5 +2515,71 @@ mod tests {
         let prompt = build_gameflow_prompt(&session, &champions, &names).unwrap();
         assert!(prompt.contains("我方: 暗裔剑魔,唤潮鲛姬"));
         assert!(prompt.contains("敌方: 影流之主,佐伊"));
+    }
+
+    /// 复制出来的表格文本必须列对齐: 中文按 2 格宽, 所以每行"召唤师"列起始位置一致。
+    #[test]
+    fn live_table_text_columns_line_up() {
+        let row = |champ: &str, name: &str, kda: &str, mine: bool| LiveTableRow {
+            position: "中".to_string(),
+            champion: champ.to_string(),
+            summoner: name.to_string(),
+            kda: kda.to_string(),
+            cs: "180".to_string(),
+            level: "11".to_string(),
+            keystone: "电刑".to_string(),
+            spells: "闪现/引燃".to_string(),
+            items: "暗影阔剑".to_string(),
+            is_local: mine,
+            is_opponent: !mine,
+            dead: String::new(),
+        };
+
+        let table = LiveTable {
+            summary: "对局中 18:32 · 比分 12:9".to_string(),
+            objectives_mine: "龙 火".to_string(),
+            objectives_theirs: "龙 土".to_string(),
+            rows_mine: vec![row("阿卡丽", "短名", "8/2/3", true)],
+            rows_theirs: vec![row("劫", "一个比较长的召唤师名字", "6/1/2", false)],
+            notes: vec!["我的金币 8420".to_string()],
+            matchup: "我 阿卡丽 vs 劫 · 补刀 +8".to_string(),
+        };
+
+        let text = render_live_table_text(&table);
+        let header = text
+            .lines()
+            .find(|l| l.trim_start().starts_with('位'))
+            .expect("表头存在");
+        let my_row = text
+            .lines()
+            .find(|l| l.contains("阿卡丽"))
+            .expect("我方行存在");
+        let foe_row = text
+            .lines()
+            .find(|l| l.contains("劫"))
+            .expect("敌方行存在");
+
+        // 表头/两行数据的"补刀"列起始位置必须相同(前面 4 列宽度固定)
+        let column_start = |line: &str, needle: &str| -> usize {
+            let byte_index = line.find(needle).expect("列存在");
+            display_width(&line[..byte_index])
+        };
+        assert_eq!(column_start(header, "补刀"), column_start(my_row, "180"));
+        assert_eq!(column_start(header, "补刀"), column_start(foe_row, "180"));
+        // 我 = ★, 对位 = ▲, 一眼能认出
+        assert!(my_row.trim_start().starts_with('★'));
+        assert!(foe_row.trim_start().starts_with('▲'));
+    }
+
+    #[test]
+    fn display_width_counts_cjk_double() {
+        assert_eq!(display_width("ab"), 2);
+        assert_eq!(display_width("阿卡丽"), 6);
+        assert_eq!(display_width("阿a"), 3);
+        assert_eq!(pad_display("劫", 6), "劫    ");
+        // 超宽要截断成省略号, 且截断后仍然占满列宽(否则后面的列会右移)
+        assert_eq!(display_width(&pad_display("一个很长的召唤师名", 6)), 6);
+        assert!(pad_display("一个很长的召唤师名", 6).contains('…'));
+        assert_eq!(display_width(&pad_display("阿卡丽", 4)), 4);
     }
 }

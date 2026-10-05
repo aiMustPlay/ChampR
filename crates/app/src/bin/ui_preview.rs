@@ -184,6 +184,7 @@ fn main() {
                 slint::SharedString::from("近期击杀 17:42 阿卡丽→劫; 18:05 盲僧→豹女; 18:21 劫→洛"),
             ])));
             ui.set_output_tab(1);
+            ui.set_copy_status(slint::SharedString::from("已复制 对局数据 12 行"));
             prepare!(ui, get_win_main_w, get_win_main_h);
         }
     }

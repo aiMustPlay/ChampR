@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use kv_log_macro::{info, warn};
-use slint::{ComponentHandle, Image, ModelRc, SharedPixelBuffer, SharedString, VecModel, Weak};
+use slint::{
+    ComponentHandle, Image, Model, ModelRc, SharedPixelBuffer, SharedString, VecModel, Weak,
+};
 
 use lcu::{
     advisor,
@@ -26,6 +28,7 @@ use lcu::{
 };
 
 slint::include_modules!();
+mod clipboard;
 mod game_screen;
 mod monitors;
 mod settings;
@@ -93,6 +96,8 @@ struct AppState {
     ui_tab_manual_at: Option<std::time::Instant>,
     /// 符文对比卡内容(我方 vs 对位符文特性 + 扬长避短), 由对局轮询计算。
     rune_compare: Option<(String, String)>,
+    /// 「对局数据」表格的纯文本版本(表格是自绘的, 选中不了, 复制按钮用这份文本)。
+    live_table_text: String,
     /// TTS voice configuration used by the advice loop.
     tts_config: tts::TtsConfig,
     /// User-configurable LoL launcher path.
@@ -167,6 +172,7 @@ impl Default for AppState {
     manual_counter_target: None,
     ui_tab_manual_at: None,
     rune_compare: None,
+    live_table_text: String::new(),
             tts_config: tts::TtsConfig::default(),
             lol_launcher_path: r"C:\WeGameApps\英雄联盟（含经典模式）\WeGameLauncher\launcher.exe".to_string(),
             deepseek_config: DeepSeekConfig {
@@ -318,6 +324,14 @@ fn main() {
     init_logging();
     info!("=== ChampR starting (pid {}) ===", std::process::id());
 
+    // 一次性剪贴板自检入口(自动化验证用): 设 CHAMPR_CLIPBOARD_SELFTEST=<文本> 时
+    // 只把文本写进剪贴板并退出, 不建窗口。0 = 成功, 2 = 失败。
+    if let Ok(text) = std::env::var("CHAMPR_CLIPBOARD_SELFTEST") {
+        let ok = clipboard::set_text(&text);
+        info!("clipboard selftest: ok={ok}");
+        std::process::exit(if ok { 0 } else { 2 });
+    }
+
     // -- Create windows --
     // 符文窗已并入主窗(用户 2026-10-04 拍板): 符文面板现在是主窗的「符文」Tab,
     // 所有 runes_* 弱引用都指向主窗(sources_window), 变量名保留以压小改动面。
@@ -451,6 +465,55 @@ fn main() {
     let state_hold = state.clone();
     sources_window.on_output_tab_hold(move || {
         state_hold.lock().unwrap().ui_tab_manual_at = Some(std::time::Instant::now());
+    });
+
+    // -- 复制输出区(用户 2026-10-05: 输出框均需要支持直接复制) --
+    // 表格与符文卡片是自绘的 Text, 系统层面选不中; TextEdit(选人面板/大师对话)
+    // 本来就能 Ctrl+C, 这里也给个一键复制整段。
+    let copy_weak = sources_window.as_weak();
+    let copy_state = state.clone();
+    sources_window.on_copy_output_clicked(move |tab| {
+        let win = copy_weak.upgrade();
+        // 符文页与大师对话直接复制"界面上正在显示的文字"(props 是唯一真源);
+        // 对局表格是自绘的行模型, 复制 Rust 侧同时生成的纯文本版本。
+        let (text, what) = match (tab, win.as_ref()) {
+            (UI_TAB_RUNES, Some(win)) => (render_runes_copy_text(win), "符文页"),
+            (UI_TAB_MATCH, _) => (
+                copy_state
+                    .lock()
+                    .map(|s| s.live_table_text.clone())
+                    .unwrap_or_default(),
+                "对局数据",
+            ),
+            (_, Some(win)) => (win.get_coach_chat_log().to_string(), "大师对话"),
+            _ => (String::new(), "输出区"),
+        };
+
+        let status = if text.trim().is_empty() {
+            format!("{what} 暂无内容")
+        } else if clipboard::set_text(&text) {
+            let lines = text.lines().count();
+            info!(
+                "copied {what} to clipboard ({lines} lines, {} chars)",
+                text.len()
+            );
+            format!("已复制 {what} {lines} 行")
+        } else {
+            // 剪贴板被别的程序占着时 OpenClipboard 会失败 —— 明确说出来, 不静默
+            warn!("failed to write {what} to clipboard");
+            "复制失败: 剪贴板被占用".to_string()
+        };
+
+        if let Some(win) = copy_weak.upgrade() {
+            win.set_copy_status(SharedString::from(&status));
+        }
+        // 3 秒后清掉提示
+        let clear_weak = copy_weak.clone();
+        slint::Timer::single_shot(Duration::from_secs(3), move || {
+            if let Some(win) = clear_weak.upgrade() {
+                win.set_copy_status(SharedString::from(""));
+            }
+        });
     });
 
     // -- 主窗不再有「启动/唤出 LoL」按钮(用户 2026-10-03 精简) --
@@ -2272,6 +2335,66 @@ async fn send_coach_message(
     Ok(advice)
 }
 
+/// 把「符文」页当前显示的内容拼成可复制的纯文本。
+///
+/// 直接读 props(界面唯一真源), 因此复制到的和看到的一定一致; 卡片按界面顺序排列,
+/// 空卡片跳过。自绘的 Text 无法选中, 这是它唯一的导出通道。
+fn render_runes_copy_text(win: &SourcesWindow) -> String {
+    /// 追加一段(标题 + 正文); 正文空白则整段跳过。
+    fn push_section(out: &mut String, title: &str, body: &str) {
+        let body = body.trim();
+        if body.is_empty() {
+            return;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        if !title.is_empty() {
+            out.push_str(&format!("【{title}】\n"));
+        }
+        out.push_str(body);
+        out.push('\n');
+    }
+
+    let mut out = String::new();
+
+    let champion = win.get_champion_name().to_string();
+    let position = win.get_position_label().to_string();
+    let header = match (champion.is_empty(), position.is_empty()) {
+        (false, false) => format!("{champion} · {position}"),
+        (false, true) => champion.clone(),
+        _ => String::new(),
+    };
+    if !header.is_empty() {
+        out.push_str(&format!("【{header}】\n"));
+    }
+
+    // 推荐符文页: 模型里的每一行(名字/分路/场次/胜率), 界面上是卡片, 这里拍平成行
+    let runes = win.get_runes();
+    for index in 0..runes.row_count() {
+        if let Some(rune) = runes.row_data(index) {
+            let mut line = format!("{}. {}", index + 1, rune.name);
+            if !rune.position.is_empty() {
+                line.push_str(&format!(" [{}]", rune.position));
+            }
+            if !rune.win_rate.is_empty() {
+                line.push_str(&format!(" 胜率 {} 场次 {}", rune.win_rate, rune.pick_count));
+            }
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+
+    push_section(&mut out, "对位方案", &win.get_counter_summary());
+    push_section(&mut out, "对位心理", &win.get_opponent_intel());
+    push_section(&mut out, "兵法心战", &win.get_war_body());
+    push_section(&mut out, "符文对比", &win.get_rune_compare_body());
+    push_section(&mut out, "我方阵容", &win.get_roster_my());
+    push_section(&mut out, "敌方阵容", &win.get_roster_enemy());
+
+    out.trim_end().to_string()
+}
+
 async fn greet_coach(weak: Weak<SourcesWindow>, state: SharedState) {
     match send_coach_message(&weak, &state, "hi".to_string()).await {
         Ok(reply) => {
@@ -2397,6 +2520,7 @@ async fn live_match_panel_task(
             // 对局快照出了新内容 → 输出区切到对局页(手动静默期内不抢)
             activate_output_tab(&weak, &state, UI_TAB_MATCH);
             let weak = weak.clone();
+            let state_for_table = state.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(win) = weak.upgrade() {
                     win.set_live_match_text(SharedString::from(text));
@@ -2422,6 +2546,12 @@ async fn live_match_panel_task(
                                         .collect::<Vec<_>>(),
                                 ))
                             };
+                            // 表格是自绘的, 复制按钮用这份纯文本(见 AppState::live_table_text)。
+                            // 必须在搬走各字段之前算好。
+                            let table_text = advisor::render_live_table_text(&table);
+                            if let Ok(mut s) = state_for_table.lock() {
+                                s.live_table_text = table_text;
+                            }
                             win.set_live_summary(SharedString::from(table.summary));
                             win.set_live_objectives_mine(SharedString::from(table.objectives_mine));
                             win.set_live_objectives_theirs(SharedString::from(

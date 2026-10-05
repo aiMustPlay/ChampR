@@ -753,6 +753,8 @@ export component SourcesWindow inherits Window {
     in-out property <string> live-objectives-theirs: "";
     in-out property <string> live-matchup: "";
     in-out property <[string]> live-notes: [];
+    /// 「复制」按钮的即时反馈("已复制 12 行" / 失败原因), 3 秒后由 Rust 清空
+    in-out property <string> copy-status: "";
     // 输出区当前 Tab: 0 = 符文, 1 = 对局数据, 2 = 大师对话(谁刚输出谁上前台)
     in-out property <int> output-tab: 0;
     // 构建戳(git 短 hash + 是否有未提交改动), 由 Rust 启动时注入
@@ -797,6 +799,9 @@ export component SourcesWindow inherits Window {
     callback output-tab-clicked(int);
     // 正在输入时续期静默(不许对局快照把输入框抢走)
     callback output-tab-hold();
+    // ---- 复制(自绘文本选不中, 只能靠按钮写剪贴板; 用户 2026-10-05 要求) ----
+    // 参数: 要复制的是哪个输出区(0=符文页, 1=对局表格, 2=大师对话)
+    callback copy-output-clicked(int);
     // ---- 符文面板回调(主窗实现, RunesPanel 转发) ----
     callback apply-rune-clicked(int);
     callback apply-best-rune-clicked();
@@ -871,6 +876,21 @@ export component SourcesWindow inherits Window {
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 1px;
+                    }
+                    // 复制: 自绘文本(表格/符文卡片)选中不了, 每个输出区一个按钮。
+                    // 反馈写在按钮左边, 3 秒后自动消失。
+                    if root.copy-status != "" : Text {
+                        text: root.copy-status;
+                        font-size: Tokens.f-mini;
+                        color: Tokens.c-ok;
+                        vertical-alignment: center;
+                    }
+                    GoldButton {
+                        text: "复制";
+                        width: 84px;
+                        clicked => {
+                            root.copy-output-clicked(root.output-tab);
+                        }
                     }
                     if root.output-tab == 2 : Text {
                         text: root.match-session-status;
@@ -1039,14 +1059,17 @@ export component SourcesWindow inherits Window {
                             background: Tokens.c-accent-bg;
                             height: 46px;
 
-                            Text {
+                            HorizontalLayout {
                                 padding-left: Tokens.s-sm;
                                 padding-right: Tokens.s-sm;
-                                text: root.live-matchup;
-                                font-size: Tokens.f-aux;
-                                color: Tokens.c-accent-text;
-                                vertical-alignment: center;
-                                wrap: word-wrap;
+
+                                Text {
+                                    text: root.live-matchup;
+                                    font-size: Tokens.f-aux;
+                                    color: Tokens.c-accent-text;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
                             }
                         }
                     }

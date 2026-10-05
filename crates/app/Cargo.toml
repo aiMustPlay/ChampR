@@ -37,6 +37,10 @@ windows-sys = { version = "0.52", features = [
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
+    # 剪贴板: 自绘的表格/卡片选不中文字, 只能靠"复制"按钮写系统剪贴板
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
 ] }
 
 [build-dependencies]
