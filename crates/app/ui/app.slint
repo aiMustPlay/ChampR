@@ -209,6 +209,114 @@ export struct RuneModel {
     sub-style-id: int,
 }
 // ---------------------------------------------------------------------------
+//  自绘标题栏(主窗无边框窗口用)。
+//  用户 2026-10-05: "主窗口不需要 title 那一列, 很丑" —— 原生标题栏是系统浅色,
+//  与深金主题冲突, 于是 no-frame + 自绘一条: 图标/名字/构建戳 + 最小化/关闭,
+//  整条可拖动, 双击最大化。
+// ---------------------------------------------------------------------------
+component TitleButton inherits Rectangle {
+    in property <string> glyph: "";
+    /// 关闭按钮: 悬停变红
+    in property <bool> danger: false;
+    callback clicked();
+
+    width: 34px;
+    height: 24px;
+    border-radius: Tokens.s-xs;
+    background: touch.pressed
+        ? (root.danger ? Tokens.c-err.darker(0.2) : Tokens.c-card.darker(0.2))
+        : (touch.has-hover
+            ? (root.danger ? Tokens.c-err.darker(0.35) : Tokens.c-card.brighter(0.25))
+            : transparent);
+
+    Text {
+        text: root.glyph;
+        font-size: Tokens.f-aux;
+        color: touch.has-hover ? Tokens.c-text : Tokens.c-text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+component TitleBar inherits Rectangle {
+    in property <string> build-stamp: "";
+    in property <image> app-icon;
+    callback drag(length, length);
+    callback minimize-clicked();
+    callback maximize-clicked();
+    callback close-clicked();
+
+    height: 34px;
+    background: Tokens.c-page;
+
+    HorizontalLayout {
+        padding-left: Tokens.s-md;
+        padding-right: Tokens.s-xs;
+        spacing: Tokens.s-sm;
+
+        Image {
+            source: root.app-icon;
+            width: 18px;
+            height: 18px;
+        }
+        Text {
+            text: "ChampR";
+            font-size: Tokens.f-aux;
+            color: Tokens.c-gold;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.build-stamp;
+            font-size: Tokens.f-mini;
+            color: Tokens.c-text-faint;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 1px;
+        }
+        TitleButton {
+            glyph: "—";
+            clicked => {
+                root.minimize-clicked();
+            }
+        }
+        TitleButton {
+            glyph: "×";
+            danger: true;
+            clicked => {
+                root.close-clicked();
+            }
+        }
+    }
+
+    // 拖动层: 声明在按钮之前(在下面), 按钮区域的点击由按钮自己吃掉
+    TouchArea {
+        property <length> last-x: 0px;
+        property <length> last-y: 0px;
+        double-clicked => {
+            root.maximize-clicked();
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                self.last-x = self.mouse-x;
+                self.last-y = self.mouse-y;
+            } else if (event.kind == PointerEventKind.move) {
+                root.drag(self.mouse-x - self.last-x, self.mouse-y - self.last-y);
+                self.last-x = self.mouse-x;
+                self.last-y = self.mouse-y;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 //  通用表格(用户 2026-10-05: 展示数据就用表格, 选人→对局→比分→装备一直用同一种形态)。
 //  列由 Rust 侧给出(title + 逻辑像素宽, width 0 = 占满剩余), 行是纯字符串单元格,
 //  另有"分区标题行/我/对位"三个标记位决定配色。选人表与对局表是同一个组件。
@@ -789,11 +897,20 @@ export component SourcesWindow inherits Window {
     default-font-family: Tokens.font-family;
     icon: @image-url("icons/champr.png");
     title: "ChampR";
+    // 无边框: 原生标题栏是系统浅色, 与深金主题冲突(用户 2026-10-05 指出的很丑),
+    // 改为下面自绘的 TitleBar; 代价是失去系统边框的拖拽缩放(尺寸由 app 自己管)。
+    no-frame: true;
     preferred-width: Tokens.win-main-w;
     preferred-height: Tokens.win-main-h;
     min-width: Tokens.win-main-min-w;
     min-height: Tokens.win-main-min-h;
     background: Tokens.c-page;
+
+    // 自绘标题栏回调
+    callback title-drag(length, length);
+    callback title-minimize-clicked();
+    callback title-maximize-clicked();
+    callback title-close-clicked();
 
     in-out property <string> status: "loading";
     in-out property <string> lcu-status: "disconnected";
@@ -879,6 +996,27 @@ export component SourcesWindow inherits Window {
     callback auto-pick-toggled(bool);
     callback auto-ban-list-edited(string);
     callback auto-pick-list-edited(string);
+
+    // 外层: 标题栏 + 内容(内容自身带 16px 内边距, 标题栏要通栏, 所以分两层)
+    VerticalLayout {
+        spacing: 0;
+
+        TitleBar {
+            build-stamp: root.build-stamp;
+            app-icon: @image-url("icons/champr.png");
+            drag(dx, dy) => {
+                root.title-drag(dx, dy);
+            }
+            minimize-clicked => {
+                root.title-minimize-clicked();
+            }
+            maximize-clicked => {
+                root.title-maximize-clicked();
+            }
+            close-clicked => {
+                root.title-close-clicked();
+            }
+        }
 
     VerticalLayout {
         padding: Tokens.s-lg;
@@ -1174,12 +1312,7 @@ export component SourcesWindow inherits Window {
             alignment: center;
             spacing: Tokens.s-sm;
 
-            Text {
-                text: "构建 " + root.build-stamp;
-                font-size: Tokens.f-mini;
-                color: Tokens.c-text-faint;
-                vertical-alignment: center;
-            }
+            // 构建戳已经移到自绘标题栏, 这里不再重复
             Rectangle {
                 horizontal-stretch: 1;
                 height: 1px;
@@ -1200,6 +1333,7 @@ export component SourcesWindow inherits Window {
             }
         }
 
+    }
     }
 }
 export component TtsSettingsWindow inherits Window {

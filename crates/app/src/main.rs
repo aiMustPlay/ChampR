@@ -1160,6 +1160,54 @@ fn main() {
         settings.save();
     });
 
+    // -- 自绘标题栏(无边框主窗): 拖动 / 最小化 / 双击最大化 / 关闭 --
+    // Slint 没有内置的"拖动窗口"能力, 只能由标题栏把指针位移交给这里, 再 set_position。
+    {
+        let drag_weak = sources_window.as_weak();
+        sources_window.on_title_drag(move |dx, dy| {
+            if let Some(win) = drag_weak.upgrade() {
+                let window = win.window();
+                // 最大化状态下拖动: 先还原, 否则位置改不动(系统行为)
+                if window.is_maximized() {
+                    window.set_maximized(false);
+                }
+                let scale = window.scale_factor() as f32;
+                let pos = window.position();
+                window.set_position(slint::PhysicalPosition::new(
+                    pos.x + (dx * scale).round() as i32,
+                    pos.y + (dy * scale).round() as i32,
+                ));
+            }
+        });
+    }
+    {
+        let minimize_weak = sources_window.as_weak();
+        sources_window.on_title_minimize_clicked(move || {
+            if let Some(win) = minimize_weak.upgrade() {
+                win.window().set_minimized(true);
+            }
+        });
+    }
+    {
+        let maximize_weak = sources_window.as_weak();
+        sources_window.on_title_maximize_clicked(move || {
+            if let Some(win) = maximize_weak.upgrade() {
+                let window = win.window();
+                let next = !window.is_maximized();
+                window.set_maximized(next);
+                info!("main window maximize -> {next}");
+            }
+        });
+    }
+    {
+        let close_weak = sources_window.as_weak();
+        sources_window.on_title_close_clicked(move || {
+            info!("title bar close clicked; quitting");
+            let _ = close_weak.upgrade();
+            let _ = slint::quit_event_loop();
+        });
+    }
+
     // -- Spawn background tasks --
     let sources_weak2 = sources_window.as_weak();
     let state_c2 = state.clone();
@@ -3728,10 +3776,12 @@ enum PinAnchor {
 }
 
 /// 窗口外框(标题栏+边框)相对客户区的额外物理像素。
-/// 实测 100% 缩放下: 高 37 / 宽 15 —— 夹紧与摆位必须把它算进去,
-/// 否则客户区"刚好放得下"时外框仍会顶出工作区(2026-10-03)。
-const FRAME_H: i32 = 40;
-const FRAME_W: i32 = 20;
+///
+/// 主窗从 2026-10-05 起是**无边框**(no-frame, 自绘标题栏), 外框 = 客户区, 所以这里是 0;
+/// 有边框时的实测值(100% 缩放: 高 37 / 宽 15)保留在注释里备查 ——
+/// 当年不算它的话, 客户区"刚好放得下"时外框仍会顶出工作区(2026-10-03)。
+const FRAME_H: i32 = 0;
+const FRAME_W: i32 = 0;
 
 /// 选目标显示器并把窗口**完整**放进工作区(尺寸超了就按比例缩, 位置再纠偏)。
 ///
@@ -3742,8 +3792,8 @@ const FRAME_W: i32 = 20;
 fn place_window_in_work_area(window: &slint::Window, m: &monitors::Monitor, anchor: PinAnchor) {
     let (l, t, r, b) = m.work_rect;
     let scale = window.scale_factor() as f64; // 每显示器 DPI, 1.0 / 1.25 / 1.5 ...
-    let frame_w = (FRAME_W as f64 / 1.0).max(16.0);
-    let frame_h = (FRAME_H as f64 / 1.0).max(32.0);
+    let frame_w = FRAME_W as f64;
+    let frame_h = FRAME_H as f64;
     // 逻辑坐标系下的可用区(扣掉外框与一点边距)
     let avail_w = (((r - l) as f64 / scale) - frame_w - 16.0).max(320.0);
     let avail_h = (((b - t) as f64 / scale) - frame_h - 16.0).max(240.0);

@@ -38,7 +38,15 @@ ChampR 是一个 Windows 英雄联盟助手：
   - 本地设置持久化
 - `ui/app.slint`
   - 主窗口(内容区三 Tab: 符文 / 对局数据 / 大师对话)
-  - Settings 窗口
+  - **主窗是无边框窗口**(`no-frame: true`) + 自绘 `TitleBar`: 图标/名字/构建戳 +
+    最小化 `—` / 关闭 `×`, 整条可拖动, 双击最大化。原因: 用户 2026-10-05 指出原生
+    标题栏是系统浅色、与深金主题冲突("很丑")。
+    - 拖动靠 `TitleBar.drag(dx, dy)` 回调 → Rust `window.set_position`, Slint 没有内置拖动
+    - 最大化状态下先 `set_maximized(false)` 再移动, 否则位置改不动
+    - 字形用 Latin-1 区(`—` U+2014 / `×` U+00D7): `✕`(U+2715) 在默认字体里是空白
+    - 代价: 没有系统边框 → 拖动边缘缩放失效; `main.rs::FRAME_W/FRAME_H` 因此改成 0
+      (无边框时外框 == 客户区, 实测 outer=830x1343 == client=830x1343)
+  - Settings 窗口仍用原生标题栏(未被要求改)
   - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings|champselect]`
     把窗口用软件渲染器画进 `.cache/ui-preview-*.png`, 布局改动先自检再交付
     (不带参数 = 主窗, 已灌对局表格演示数据, 默认停在「对局数据」Tab)
