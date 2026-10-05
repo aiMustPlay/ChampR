@@ -583,7 +583,7 @@ pub fn build_lineup_prompt(
     champions: &ChampionsMap,
     names: &StaticNames,
     local_rune_page: Option<&Value>,
-    ranks: &HashMap<i64, String>,
+    ranks: &HashMap<i64, RankInfo>,
     sections_map: &HashMap<i64, Vec<BuildSection>>,
     atlas: &PlaystyleAtlas,
 ) -> anyhow::Result<String> {
@@ -1057,6 +1057,93 @@ fn columns_of(spec: &[(&str, i32, bool)]) -> Vec<TableColumn> {
         .collect()
 }
 
+/// 一个玩家的排位信息(LCU `/lol-ranked/v1/ranked-stats/{puuid}` 的单双排)。
+///
+/// 这是**个人**数据, 与"英雄全服胜率"是两回事: 用户 2026-10-05 要的就是个人战绩,
+/// 而个人**分英雄**胜率 LCU 拿不到(只提供本地玩家的比赛记录), 所以能给的最近似项是
+/// 「该玩家本赛季单双排总胜率」。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RankInfo {
+    /// "黄金 II" / "最强王者 320胜点"
+    pub rank: String,
+    /// 个人本赛季单双排胜率, 例如 "55%"(没有战绩时为空)
+    pub personal_rate: String,
+    /// "120胜98负"
+    pub personal_record: String,
+}
+
+impl std::fmt::Display for RankInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.prompt_text())
+    }
+}
+
+impl RankInfo {
+    /// prompt / 日志用的一行文字。
+    pub fn prompt_text(&self) -> String {
+        let mut text = format!("单双{}", self.rank);
+        if !self.personal_record.is_empty() {
+            text.push_str(&format!(" {}", self.personal_record));
+        }
+        text
+    }
+}
+
+/// 段位英文 → 中文。
+pub fn rank_tier_zh(tier: &str) -> String {
+    match tier.to_ascii_uppercase().as_str() {
+        "IRON" => "坚韧黑铁",
+        "BRONZE" => "英勇黄铜",
+        "SILVER" => "不屈白银",
+        "GOLD" => "荣耀黄金",
+        "PLATINUM" => "华贵铂金",
+        "EMERALD" => "流光翡翠",
+        "DIAMOND" => "璀璨钻石",
+        "MASTER" => "超凡大师",
+        "GRANDMASTER" => "傲世宗师",
+        "CHALLENGER" => "最强王者",
+        other => other,
+    }
+    .to_string()
+}
+
+/// 解析 LCU 排位数据: 段位 + 个人胜率 + 战绩。没有单双排成绩时返回 None。
+pub fn parse_ranked_stats(stats: &Value) -> Option<RankInfo> {
+    let solo = stats.get("queueMap")?.get("RANKED_SOLO_5x5")?;
+    let tier = solo.get("tier").and_then(Value::as_str).unwrap_or("");
+    if tier.is_empty() || tier.eq_ignore_ascii_case("NONE") {
+        return None;
+    }
+    let division = solo.get("division").and_then(Value::as_str).unwrap_or("");
+    let lp = solo.get("leaguePoints").and_then(Value::as_i64).unwrap_or(0);
+    let wins = solo.get("wins").and_then(Value::as_i64).unwrap_or(0);
+    let losses = solo.get("losses").and_then(Value::as_i64).unwrap_or(0);
+
+    let rank = format!(
+        "{}{}{}",
+        rank_tier_zh(tier),
+        division,
+        if lp > 0 {
+            format!(" {lp}胜点")
+        } else {
+            String::new()
+        },
+    );
+    let (personal_rate, personal_record) = if wins + losses > 0 {
+        (
+            format!("{:.0}%", wins as f64 * 100.0 / (wins + losses) as f64),
+            format!("{wins}胜{losses}负"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    Some(RankInfo {
+        rank,
+        personal_rate,
+        personal_record,
+    })
+}
+
 /// 选人期的"选手档案": 段位、OP.GG 分路胜率这些**只有选人阶段拿得到**的数据。
 ///
 /// 用户 2026-10-05: "用一个状态表格维护选人、游戏过程中的所有关键数据" ——
@@ -1074,7 +1161,11 @@ pub struct RosterEntry {
     pub summoner: String,
     /// 段位(选人期查 ranked-stats 得到; 拿不到为 "-")
     pub rank: String,
-    /// OP.GG 该英雄该分路胜率(拿不到为 "-")
+    /// **个人**本赛季单双排胜率(LCU ranked-stats 的 wins/losses 算出来; 拿不到为 "-")
+    pub personal_rate: String,
+    /// **个人**战绩 "120胜98负"(拿不到为空)
+    pub personal_record: String,
+    /// OP.GG 该英雄该分路胜率(全服数据, 拿不到为 "-")
     pub win_rate: String,
     pub games: String,
     pub mine_team: bool,
@@ -1085,14 +1176,14 @@ pub struct RosterEntry {
 /// 统一状态表格的列(选人与对局共用): 选人期先填 段位/胜率, 开局后填 KDA/补刀/等级/装备。
 const MATCH_COLUMNS: [(&str, i32, bool); 10] = [
     ("位", 30, false),
-    ("英雄", 82, true),
-    ("召唤师", 100, false),
-    ("段位", 66, false),
-    ("胜率", 52, true),
-    ("KDA", 62, true),
-    ("补刀", 44, true),
-    ("等级", 34, true),
-    ("基石", 62, false),
+    ("英雄", 80, true),
+    ("召唤师", 92, false),
+    ("段位", 60, false),
+    ("个人胜率", 60, true),
+    ("英雄胜率", 60, false),
+    ("KDA", 58, true),
+    ("补刀", 40, true),
+    ("等级", 32, true),
     ("装备", 0, false), // 弹性列; 选人阶段这一列放"场次"(见下)
 ];
 
@@ -1192,7 +1283,7 @@ pub fn build_champ_select_table(
     session: &Value,
     champions: &ChampionsMap,
     names: &StaticNames,
-    ranks: &HashMap<i64, String>,
+    ranks: &HashMap<i64, RankInfo>,
     sections_map: &HashMap<i64, Vec<BuildSection>>,
 ) -> anyhow::Result<(DataTable, Vec<RosterEntry>)> {
     let snapshot = ChampSelectSnapshot::from_session(session)?;
@@ -1240,10 +1331,21 @@ pub fn build_champ_select_table(
             champion_id: member.effective_champion(),
             champion,
             summoner: name_of(member, index, mine),
+            // 段位/个人胜率/战绩: 同一份 LCU 排位数据, 与英雄无关
             rank: ranks
                 .get(&member.summoner_id)
-                .cloned()
+                .map(|info| info.rank.clone())
+                .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| "-".to_string()),
+            personal_rate: ranks
+                .get(&member.summoner_id)
+                .map(|info| info.personal_rate.clone())
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| "-".to_string()),
+            personal_record: ranks
+                .get(&member.summoner_id)
+                .map(|info| info.personal_record.clone())
+                .unwrap_or_default(),
             win_rate: section
                 .map(|s| s.win_rate.clone())
                 .unwrap_or_else(|| "-".to_string()),
@@ -1278,11 +1380,11 @@ pub fn build_champ_select_table(
                 or_dash(&entry.champion),
                 or_dash(&entry.summoner),
                 or_dash(&entry.rank),
-                or_dash(&entry.win_rate),
+                or_dash(&entry.personal_rate),   // 个人本赛季胜率(LCU)
+                or_dash(&entry.win_rate),        // 英雄全服胜率(OP.GG)
                 "-".to_string(), // KDA: 对局开始后才有
                 "-".to_string(), // 补刀
                 "-".to_string(), // 等级
-                "-".to_string(), // 基石
                 or_dash(&entry.games), // 选人期装备列先放"场次"(样本量), 开局换成装备
             ],
             mine_team: entry.mine_team,
@@ -1432,6 +1534,11 @@ pub fn build_live_table(
             .map(|e| e.rank.clone())
             .filter(|text| !text.trim().is_empty() && text != "-")
             .unwrap_or_else(|| "-".to_string());
+        // 个人胜率与英雄无关, 直接来自选人期查到的排位战绩(段位那一列同一来源)
+        let personal_rate = cached
+            .map(|e| e.personal_rate.clone())
+            .filter(|text| !text.trim().is_empty() && text != "-")
+            .unwrap_or_else(|| "-".to_string());
         // 胜率**必须按他现在真正在玩的英雄**算: 选人后可以换英雄(交易), 档案里记的是
         // 选人时那个英雄 —— 用档案的胜率就会显示成"别人英雄的胜率"(用户 2026-10-05
         // 说"每个玩家当前使用的英雄胜率是假的")。所以先按 Live 的英雄查 OP.GG,
@@ -1459,11 +1566,11 @@ pub fn build_live_table(
                 or_dash(&champ_zh_by_display(&player.champion_name, champions, names)),
                 or_dash(&summoner),
                 or_dash(&rank),
-                or_dash(&win_rate),
+                or_dash(&personal_rate), // 个人本赛季胜率(LCU, 与英雄无关)
+                or_dash(&win_rate),      // 当前英雄的全服胜率(OP.GG)
                 or_dash(&player.kda()),
                 player.creep_score.to_string(),
                 player.level.to_string(),
-                or_dash(&names.rune(player.keystone_id, &player.keystone_name)),
                 or_dash(&items),
             ],
             mine_team: player.team == local_team,
@@ -1927,7 +2034,7 @@ pub fn build_champ_select_panel_text(
     session: &Value,
     champions: &ChampionsMap,
     names: &StaticNames,
-    ranks: &HashMap<i64, String>,
+    ranks: &HashMap<i64, RankInfo>,
     sections_map: &HashMap<i64, Vec<BuildSection>>,
 ) -> anyhow::Result<String> {
     let snapshot = ChampSelectSnapshot::from_session(session)?;
@@ -2447,12 +2554,12 @@ mod tests {
         for row in &player_rows {
             // 列序: 位/英雄/召唤师/段位/胜率/KDA/补刀/等级/基石/装备
             assert_ne!(
-                row.cells[4], "-",
-                "胜率列不能为空: {:?}",
+                row.cells[5], "-",
+                "英雄胜率列不能为空: {:?}",
                 row.cells
             );
         }
-        let rates: Vec<&str> = player_rows.iter().map(|row| row.cells[4].as_str()).collect();
+        let rates: Vec<&str> = player_rows.iter().map(|row| row.cells[5].as_str()).collect();
         assert!(rates.contains(&"47.83%"), "本地英雄胜率来自 OP.GG: {rates:?}");
         assert!(rates.contains(&"51.21%"), "对手英雄胜率同样要有: {rates:?}");
     }
@@ -2562,7 +2669,14 @@ mod tests {
             }],
         );
 
-        let ranks = HashMap::from([(11, "单双 黄金II".to_string())]);
+        let ranks = HashMap::from([(
+            11,
+            RankInfo {
+                rank: "黄金II".to_string(),
+                personal_rate: "55%".to_string(),
+                personal_record: "120胜98负".to_string(),
+            },
+        )]);
 
         let atlas = crate::tips::PlaystyleAtlas {
             champions: std::collections::HashMap::from([(
@@ -2594,7 +2708,8 @@ mod tests {
         // 对位行
         assert!(prompt.contains("对位: 敌方中单 影流之主"));
         // 段位与召唤师技能
-        assert!(prompt.contains("暗裔剑魔(中单, 单双 黄金II, 闪现/点燃)"));
+        assert!(prompt.contains("暗裔剑魔(中单, 单双黄金II"), "段位应出现在 prompt");
+        assert!(prompt.contains("闪现/点燃"), "召唤师技能应出现在 prompt");
         // 当前符文页中文名
         assert!(prompt.contains("当前符文页: 主宰+巫术: 电刑"));
         // OP.GG 细节: 梯度/胜率/符文/装备
@@ -2638,7 +2753,14 @@ mod tests {
                 {"cellId": 6, "championId": 0, "assignedPosition": "top", "summonerId": 33}
             ]
         });
-        let ranks = HashMap::from([(11, "单双 荣耀黄金II".to_string())]);
+        let ranks = HashMap::from([(
+            11,
+            RankInfo {
+                rank: "荣耀黄金II".to_string(),
+                personal_rate: "55%".to_string(),
+                personal_record: "120胜98负".to_string(),
+            },
+        )]);
         // Local champ (Aatrox) fields counters: panel should surface ban advice.
         let sections: HashMap<i64, Vec<BuildSection>> =
             HashMap::from([(266, vec![aatrox_section_with_counters()])]);
@@ -2647,7 +2769,7 @@ mod tests {
             build_champ_select_panel_text(&session, &champions, &names, &ranks, &sections).unwrap();
 
         assert!(panel.contains("ban 我方[] 敌方[佐伊]"));
-        assert!(panel.contains("暗裔剑魔(中单 单双 荣耀黄金II)"));
+        assert!(panel.contains("暗裔剑魔(中单 单双荣耀黄金II"), "段位+个人战绩应出现在选人面板");
         assert!(panel.contains("影流之主(中单)"));
         assert!(!panel.contains("本机位置: 中单 | 对位: 敌方中单 佐伊")); // 敌方中单是影流之主
         assert!(panel.contains("本机位置: 中单 | 对位: 敌方中单 影流之主"));
@@ -2963,7 +3085,8 @@ mod tests {
                 champ.to_string(),
                 name.to_string(),
                 "铂金 II".to_string(),
-                "51.2%".to_string(),
+                "55%".to_string(),      // 个人胜率
+                "51.2%".to_string(),    // 英雄胜率
                 kda.to_string(),
                 "180".to_string(),
                 "11".to_string(),
@@ -2996,6 +3119,8 @@ mod tests {
         };
 
         let text = render_table_text(&table);
+        eprintln!("TABLE-DEBUG
+{text}");
         let header = text
             .lines()
             .find(|l| l.trim_start().starts_with('位'))
@@ -3032,6 +3157,8 @@ mod tests {
             champion: format!("英雄{champ}"),
             summoner: name.to_string(),
             rank: "铂金 II".to_string(),
+            personal_rate: "55%".to_string(),
+            personal_record: "120胜98负".to_string(),
             win_rate: "51.2%".to_string(),
             games: "1240".to_string(),
             mine_team: my_team,
@@ -3144,7 +3271,7 @@ mod tests {
                 .rows
                 .iter()
                 .find(|row| row.section.is_empty() && row.cells[1] == champion)
-                .map(|row| row.cells[4].clone())
+                .map(|row| row.cells[5].clone()) // 英雄胜率列
                 .unwrap_or_else(|| panic!("缺少 {champion} 这一行"))
         };
         assert_eq!(rate_for_row("佐伊"), "51.21%");
@@ -3185,6 +3312,8 @@ mod tests {
             champion: "暗裔剑魔".to_string(),
             summoner: "Me".to_string(),
             rank: "黄金 II".to_string(),
+            personal_rate: "55%".to_string(),
+            personal_record: "120胜98负".to_string(),
             win_rate: "40.00%".to_string(), // 旧英雄的胜率: 绝不能被采用
             games: "1".to_string(),
             mine_team: true,
@@ -3203,9 +3332,10 @@ mod tests {
         assert_eq!(my_row.cells[1], "影流之主", "英雄列应是交易后的劫");
         assert_eq!(my_row.cells[3], "黄金 II", "段位与英雄无关, 仍来自档案");
         assert_eq!(
-            my_row.cells[4], "49.95%",
-            "胜率必须按当前英雄(劫)算, 而不是档案里旧英雄的 40.00%"
+            my_row.cells[5], "49.95%",
+            "英雄胜率必须按当前英雄(劫)算, 而不是档案里旧英雄的 40.00%"
         );
+        assert_eq!(my_row.cells[4], "55%", "个人胜率与英雄无关, 仍是 55%");
     }
 
     /// 回归: 我与对位同分路时, 两行必须各查各的档案 —— 不能显示成一样的胜率/段位。
@@ -3226,6 +3356,8 @@ mod tests {
             champion: format!("英雄{champ}"),
             summoner: name.to_string(),
             rank: rank.to_string(),
+            personal_rate: "55%".to_string(),
+            personal_record: "120胜98负".to_string(),
             win_rate: rate.to_string(),
             games: "1000".to_string(),
             mine_team,
@@ -3249,13 +3381,11 @@ mod tests {
 
         // 列序: 位/英雄/召唤师/段位/胜率/…
         assert_eq!(my_row.cells[3], "黄金 II");
-        assert_eq!(my_row.cells[4], "48.00%");
+        assert_eq!(my_row.cells[4], "55%"); // 个人胜率来自各自档案
         assert_eq!(foe_row.cells[3], "铂金 I");
-        assert_eq!(foe_row.cells[4], "53.00%");
-        assert_ne!(
-            my_row.cells[4], foe_row.cells[4],
-            "我和对位的胜率不能相同(各查各的档案)"
-        );
+        assert_eq!(foe_row.cells[4], "55%");
+        assert_eq!(my_row.cells[5], "48.00%"); // 英雄胜率
+        assert_eq!(foe_row.cells[5], "53.00%");
     }
 
     #[test]

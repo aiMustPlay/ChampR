@@ -151,7 +151,7 @@ struct AppState {
     /// Per-champion OP.GG sections cache (keyed by champion id) reused across prompts.
     opgg_sections_cache: HashMap<i64, Vec<lcu::builds::BuildSection>>,
     /// Ranked summary cache keyed by summoner id, fetched at most once per player.
-    ranked_stats_cache: HashMap<i64, String>,
+    ranked_stats_cache: HashMap<i64, lcu::advisor::RankInfo>,
     /// Stable identifier for the current match session.
     match_id: String,
     /// Current observed gameflow/live-client phase.
@@ -2276,45 +2276,9 @@ async fn ensure_opgg_sections(state: &SharedState, champion_ids: &[i64]) {
     }
 }
 
-fn rank_tier_zh(tier: &str) -> String {
-    match tier.to_ascii_uppercase().as_str() {
-        "IRON" => "坚韧黑铁",
-        "BRONZE" => "英勇黄铜",
-        "SILVER" => "不屈白银",
-        "GOLD" => "荣耀黄金",
-        "PLATINUM" => "华贵铂金",
-        "EMERALD" => "流光翡翠",
-        "DIAMOND" => "璀璨钻石",
-        "MASTER" => "超凡大师",
-        "GRANDMASTER" => "傲世宗师",
-        "CHALLENGER" => "最强王者",
-        other => other,
-    }
-    .to_string()
-}
-
-fn format_ranked_stats(stats: &Value) -> Option<String> {
-    let solo = stats.get("queueMap")?.get("RANKED_SOLO_5x5")?;
-    let tier = solo.get("tier").and_then(Value::as_str).unwrap_or("");
-    if tier.is_empty() || tier.eq_ignore_ascii_case("NONE") {
-        return None;
-    }
-    let division = solo.get("division").and_then(Value::as_str).unwrap_or("");
-    let lp = solo.get("leaguePoints").and_then(Value::as_i64).unwrap_or(0);
-    let wins = solo.get("wins").and_then(Value::as_i64).unwrap_or(0);
-    let losses = solo.get("losses").and_then(Value::as_i64).unwrap_or(0);
-    Some(format!(
-        "单双{}{}{}{}{}",
-        rank_tier_zh(tier),
-        division,
-        if lp > 0 { format!(" {lp}胜点") } else { String::new() },
-        if wins > 0 { format!(" {wins}胜") } else { String::new() },
-        if losses > 0 { format!("{losses}负") } else { String::new() },
-    ))
-}
-
-/// Resolve one summoner's solo queue rank text (best effort).
-async fn lookup_rank_text(endpoint: &str, summoner_id: i64) -> Option<String> {
+/// 查一个召唤师的排位信息(段位 + 个人胜率 + 战绩), best effort。
+/// 结构体与解析都在 `lcu::advisor::RankInfo`(可单测), 这里只负责调 LCU 接口。
+async fn lookup_rank_text(endpoint: &str, summoner_id: i64) -> Option<lcu::advisor::RankInfo> {
     let summoner = lcu_api::get_summoner_by_id(endpoint, summoner_id).await.ok()?;
     let puuid = summoner
         .get("puuid")
@@ -2322,7 +2286,7 @@ async fn lookup_rank_text(endpoint: &str, summoner_id: i64) -> Option<String> {
         .map(str::to_string)
         .filter(|puuid| !puuid.is_empty())?;
     let stats = lcu_api::get_ranked_stats(endpoint, &puuid).await.ok()?;
-    format_ranked_stats(&stats)
+    lcu::advisor::parse_ranked_stats(&stats)
 }
 
 /// Build the champ-select prompt enriched with rune page, ranks and OP.GG stats.
