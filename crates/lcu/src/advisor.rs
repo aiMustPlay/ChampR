@@ -1432,12 +1432,19 @@ pub fn build_live_table(
             .map(|e| e.rank.clone())
             .filter(|text| !text.trim().is_empty() && text != "-")
             .unwrap_or_else(|| "-".to_string());
-        // 胜率: 优先用选人档案; 档案里没有(例如 app 是开局后才启动的)就直接按英雄
-        // 查 OP.GG 分路数据 —— 否则队友/对手那一列会平白变成 "-"(用户 2026-10-05 报障)
-        let win_rate = cached
-            .map(|e| e.win_rate.clone())
-            .filter(|text| !text.trim().is_empty() && text != "-")
-            .unwrap_or_else(|| section_win_rate(sections, champion_id, &player.position));
+        // 胜率**必须按他现在真正在玩的英雄**算: 选人后可以换英雄(交易), 档案里记的是
+        // 选人时那个英雄 —— 用档案的胜率就会显示成"别人英雄的胜率"(用户 2026-10-05
+        // 说"每个玩家当前使用的英雄胜率是假的")。所以先按 Live 的英雄查 OP.GG,
+        // 查不到才退回档案里的值。段位与英雄无关, 仍用档案。
+        let from_sections = section_win_rate(sections, champion_id, &player.position);
+        let win_rate = if from_sections != "-" {
+            from_sections
+        } else {
+            cached
+                .map(|e| e.win_rate.clone())
+                .filter(|text| !text.trim().is_empty() && text != "-")
+                .unwrap_or_else(|| "-".to_string())
+        };
         // 召唤师名: Live 数据里有就用(权威), 没有则沿用选人期缓存的
         let summoner = if player.summoner_name.trim().is_empty() {
             cached.map(|e| e.summoner.clone()).unwrap_or_default()
@@ -3059,6 +3066,146 @@ mod tests {
 
         // 4) 三个都不匹配 → None(调用方显示 "-")
         assert!(find_roster(&roster, "jungle", 999, "路人", true).is_none());
+    }
+
+    /// 每一行的胜率必须来自**他自己的英雄**, 不能串到别人身上。
+    /// 用真实库里的数值(Aatrox 47.83% / Zed 49.95% / Ahri 51.21% / Yasuo 50.32%)
+    /// 组成 10 人排位, 逐行核对。用户 2026-10-05 质疑"每个玩家的英雄胜率是假的"。
+    #[test]
+    fn champ_select_rates_match_each_members_own_champion() {
+        let champions = test_champions();
+        let names = test_names();
+
+        // 四个英雄的真实 OP.GG 数据(与本地 champion_data 一致)
+        let section = |alias: &str, lane: &str, rate: &str, games: i64| crate::builds::BuildSection {
+            alias: alias.to_string(),
+            name: alias.to_string(),
+            position: lane.to_string(),
+            win_rate: rate.to_string(),
+            pick_count: games,
+            ..Default::default()
+        };
+        let sections: HashMap<i64, Vec<crate::builds::BuildSection>> = HashMap::from([
+            (266, vec![section("aatrox", "top", "47.83%", 5528)]),
+            (238, vec![section("zed", "middle", "49.95%", 3079)]),
+            (142, vec![section("zoe", "middle", "51.21%", 5058)]),
+            (267, vec![section("nami", "support", "52.10%", 5187)]),
+        ]);
+
+        let member = |cell: i64, champion: i64, pos: &str, name: &str| {
+            serde_json::json!({
+                "cellId": cell,
+                "championId": champion,
+                "championPickIntent": 0,
+                "assignedPosition": pos,
+                "summonerId": cell * 10,
+                "puuid": format!("puuid-{cell}"),
+                "displayName": name,
+            })
+        };
+        let session = serde_json::json!({
+            "localPlayerCellId": 0,
+            "myTeam": [
+                member(0, 142, "middle", "我"),
+                member(1, 266, "top", "队友上单"),
+            ],
+            "theirTeam": [
+                member(5, 238, "middle", "敌方中单"),
+                member(6, 267, "support", "敌方辅助"),
+            ],
+            "bans": {"myTeamBans": [], "theirTeamBans": []},
+        });
+
+        let (table, roster) = build_champ_select_table(
+            &session,
+            &champions,
+            &names,
+            &HashMap::new(),
+            &sections,
+        )
+        .expect("table");
+
+        // 档案里每个英雄配到的必须是自己的胜率
+        let rate_of = |champion_id: i64| -> String {
+            roster
+                .iter()
+                .find(|entry| entry.champion_id == champion_id)
+                .map(|entry| entry.win_rate.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(rate_of(142), "51.21%", "佐伊");
+        assert_eq!(rate_of(266), "47.83%", "亚托克斯");
+        assert_eq!(rate_of(238), "49.95%", "劫");
+        assert_eq!(rate_of(267), "52.10%", "唤潮鲛姬");
+
+        // 表格里每一行的胜率列也必须等于该行英雄自己的值(按英雄名核对)
+        let rate_for_row = |champion: &str| -> String {
+            table
+                .rows
+                .iter()
+                .find(|row| row.section.is_empty() && row.cells[1] == champion)
+                .map(|row| row.cells[4].clone())
+                .unwrap_or_else(|| panic!("缺少 {champion} 这一行"))
+        };
+        assert_eq!(rate_for_row("佐伊"), "51.21%");
+        assert_eq!(rate_for_row("暗裔剑魔"), "47.83%");
+        assert_eq!(rate_for_row("影流之主"), "49.95%");
+        assert_eq!(rate_for_row("唤潮鲛姬"), "52.10%");
+    }
+
+    /// 回归: 选人后换了英雄(交易), 对局里显示的胜率必须是**现在这个英雄**的,
+    /// 不能沿用选人档案里那个旧英雄的胜率 —— 用户 2026-10-05:
+    /// "你拿的每个玩家的当前使用的英雄的胜率是假的"。
+    #[test]
+    fn traded_champion_uses_the_live_champions_win_rate() {
+        let champions = test_champions();
+        let names = test_names();
+        let mut data = sample_live_data();
+        // 我把亚托克斯换成了劫(交易): Live 数据里我的英雄变成 Zed
+        data["allPlayers"][0]["championName"] = serde_json::json!("Zed");
+
+        let section = |alias: &str, lane: &str, rate: &str| crate::builds::BuildSection {
+            alias: alias.to_string(),
+            name: alias.to_string(),
+            position: lane.to_string(),
+            win_rate: rate.to_string(),
+            pick_count: 4000,
+            ..Default::default()
+        };
+        let sections: HashMap<i64, Vec<crate::builds::BuildSection>> = HashMap::from([
+            (266, vec![section("aatrox", "top", "47.83%")]),
+            (238, vec![section("zed", "top", "49.95%")]),
+        ]);
+
+        // 档案里记的还是选人时的亚托克斯(47.83% 之外的旧值), 段位与英雄无关
+        let roster = vec![RosterEntry {
+            position: "top".to_string(),
+            position_label: position_label("top"),
+            champion_id: 266,
+            champion: "暗裔剑魔".to_string(),
+            summoner: "Me".to_string(),
+            rank: "黄金 II".to_string(),
+            win_rate: "40.00%".to_string(), // 旧英雄的胜率: 绝不能被采用
+            games: "1".to_string(),
+            mine_team: true,
+            mine: true,
+            opponent: false,
+        }];
+
+        let table =
+            build_live_table(&data, &champions, &names, &roster, &sections).expect("table");
+        let my_row = table
+            .rows
+            .iter()
+            .find(|row| row.mine)
+            .expect("my row");
+
+        assert_eq!(my_row.cells[1], "影流之主", "英雄列应是交易后的劫");
+        assert_eq!(my_row.cells[3], "黄金 II", "段位与英雄无关, 仍来自档案");
+        assert_eq!(
+            my_row.cells[4], "49.95%",
+            "胜率必须按当前英雄(劫)算, 而不是档案里旧英雄的 40.00%"
+        );
     }
 
     /// 回归: 我与对位同分路时, 两行必须各查各的档案 —— 不能显示成一样的胜率/段位。
