@@ -2324,7 +2324,8 @@ async fn ensure_opgg_sections(state: &SharedState, champion_ids: &[i64]) {
                 changed = true;
             }
             Ok(_) => {
-                // 后端没有这个英雄的数据: 记日志, 冷却期内不再打扰
+                // 后端没有这个英雄的数据: 记日志(便于排查"为什么这一行是 -"), 冷却期内不再打扰
+                info!("OP.GG 库中没有 champion {id} 的数据, 胜率列显示 - , 冷却 10 分钟");
                 s.opgg_attempt_at.insert(id, std::time::Instant::now());
             }
             Err(err) => {
