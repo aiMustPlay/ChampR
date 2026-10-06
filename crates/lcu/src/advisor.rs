@@ -1278,6 +1278,16 @@ fn find_roster<'a>(
     None
 }
 
+/// 空串显示为"无"——禁人行措辞必须无歧义(用户 2026-10-05: "ban 我方 敌方 意义不明确"),
+/// "我方禁用: 无" 比 "ban 我方[]" 明确: 始终是"哪一方禁用了什么"。
+fn empty_as_none(text: &str) -> &str {
+    if text.is_empty() {
+        "无"
+    } else {
+        text
+    }
+}
+
 /// 选人阶段: 生成状态表格 + 需要缓存到对局期的选手档案。
 pub fn build_champ_select_table(
     session: &Value,
@@ -1422,9 +1432,9 @@ pub fn build_champ_select_table(
     rows.extend(their_rows.iter().map(|entry| row_of(entry)));
 
     let mut sub_lines = vec![format!(
-        "ban 我方[{}]  敌方[{}]",
-        ban_names(&snapshot.my_bans),
-        ban_names(&snapshot.their_bans)
+        "我方禁用: {}  |  敌方禁用: {}",
+        empty_as_none(&ban_names(&snapshot.my_bans)),
+        empty_as_none(&ban_names(&snapshot.their_bans))
     )];
     sub_lines.retain(|line| !line.trim().is_empty());
 
@@ -2065,9 +2075,9 @@ pub fn build_champ_select_panel_text(
 
     let mut lines: Vec<String> = vec!["英雄选择中".to_string()];
     lines.push(format!(
-        "ban 我方[{}] 敌方[{}]",
-        ban_names(&snapshot.my_bans),
-        ban_names(&snapshot.their_bans)
+        "我方禁用: {}  |  敌方禁用: {}",
+        empty_as_none(&ban_names(&snapshot.my_bans)),
+        empty_as_none(&ban_names(&snapshot.their_bans))
     ));
     lines.push("—— 我方 ——".to_string());
     for member in &snapshot.my_team {
@@ -2768,7 +2778,7 @@ mod tests {
         let panel =
             build_champ_select_panel_text(&session, &champions, &names, &ranks, &sections).unwrap();
 
-        assert!(panel.contains("ban 我方[] 敌方[佐伊]"));
+        assert!(panel.contains("我方禁用: 无  |  敌方禁用: 佐伊"));
         assert!(panel.contains("暗裔剑魔(中单 单双荣耀黄金II"), "段位+个人战绩应出现在选人面板");
         assert!(panel.contains("影流之主(中单)"));
         assert!(!panel.contains("本机位置: 中单 | 对位: 敌方中单 佐伊")); // 敌方中单是影流之主
