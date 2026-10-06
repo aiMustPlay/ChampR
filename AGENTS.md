@@ -44,9 +44,11 @@ ChampR 是一个 Windows 英雄联盟助手：
     - 拖动走 Win32 原生标题栏拖拽(2026-10-05 重制): drag 回调里 `FindWindowW("ChampR")`
       → `ReleaseCapture()` → `SendMessage(WM_NCLBUTTONDOWN, HTCAPTION)`, 系统接管整个拖动
       —— 光标全程锁定(旧的逐事件 `window.set_position` 方案每帧重算悬停控件, 光标在
-      箭头/手型/I 形间狂闪, 用户报障), 最大化自动还原续拖、贴边吸附免费获得;
-      启动前用 `GetAsyncKeyState(VK_LBUTTON)` 排除按键已松开的滞后回调, `HWND==0` 时
-      才退回手动 set_position。防重入: `SendMessage` 阻塞到松手, AtomicBool 挡中间回调
+      箭头/手型/I 形间狂闪, 用户报障), 最大化自动还原续拖、贴边吸附免费获得。
+      **防护不可省**(2026-10-05 二次抖动事故): ①模态循环吃掉 WM_LBUTTONUP, winit/Slint
+      之后还以为按住 → 回调必须以 `GetAsyncKeyState(VK_LBUTTON)` 物理状态为第一闸门,
+      松手后的积压/悬停残留一律返回, 绝不能落到手动 set_position(陈旧位移=窗口再跳一次);
+      ②SendMessage 阻塞期间可重入 → AtomicBool 挡掉; `HWND==0` 才退回手动跟随
     - 字形用 Latin-1 区(`—` U+2014 / `×` U+00D7): `✕`(U+2715) 在默认字体里是空白
     - 代价: 没有系统边框 → 拖动边缘缩放失效; `main.rs::FRAME_W/FRAME_H` 因此改成 0
       (无边框时外框 == 客户区; 主窗 2026-10-05 起 680×1100, 用户反馈 830 对符文页太宽,

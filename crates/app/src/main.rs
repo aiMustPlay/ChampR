@@ -1150,9 +1150,14 @@ fn main() {
 
     // -- 自绘标题栏(无边框主窗): 拖动 / 最小化 / 双击最大化 / 关闭 --
     // 拖动用 Win32 原生标题栏拖拽(ReleaseCapture + WM_NCLBUTTONDOWN/HTCAPTION):
-    // 系统接管整个拖动 —— 光标全程锁定(旧的 Slint 逐像素 set_position 方案会
-    // 每帧重算悬停控件、疯狂切换光标形状, 用户 2026-10-05 反馈"光标一直闪烁"),
-    // 且最大化窗口自动还原接续拖拽、贴边吸附也免费获得。
+    // 系统接管整个拖动, 光标全程锁定不再闪烁。
+    //
+    // ⚠ 两个必须的防护(2026-10-05 拖拽抖动事故):
+    //  1) 原生拖拽的模态循环会**吃掉 WM_LBUTTONUP** → winit/Slint 之后还以为按键按着,
+    //     拖拽结束后的积压回调、甚至之后鼠标悬停划过标题栏的移动都会继续触发本回调;
+    //     所以**物理按键状态(GetAsyncKeyState)是唯一权威**, 松手后回调一律忽略,
+    //     绝不能让它们落到手动 set_position 兜底(那会用陈旧位移把窗口再挪一次 = 抖动)。
+    //  2) SendMessage 阻塞期间界面线程可能重入本回调 → AtomicBool 挡掉。
     {
         let drag_weak = sources_window.as_weak();
         sources_window.on_title_drag(move |dx, dy| {
@@ -1163,25 +1168,28 @@ fn main() {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 FindWindowW, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
             };
-            // 防重入: 原生拖拽期间 SendMessage 一直阻塞到松手, 期间的回调直接丢
+            // 第一闸门: 物理上没按住左键 → 这是积压/残留回调, 什么都不做
+            if unsafe { GetAsyncKeyState(VK_LBUTTON as i32) } >= 0 {
+                return;
+            }
             static NATIVE_DRAG: AtomicBool = AtomicBool::new(false);
             if NATIVE_DRAG.swap(true, Ordering::SeqCst) {
                 return;
             }
-            let done = || NATIVE_DRAG.store(false, Ordering::SeqCst);
-
             let title: Vec<u16> = "ChampR".encode_utf16().chain(Some(0)).collect();
-            unsafe {
-                let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-                // 物理按键状态优先: 按钮实际已松开(Slint pressed 滞后)则不启动原生拖拽
-                if hwnd != 0 && GetAsyncKeyState(VK_LBUTTON as i32) < 0 {
+            let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+            if hwnd != 0 {
+                unsafe {
                     ReleaseCapture();
+                    // 阻塞到松手; 松手那一刻返回, 此后 GetAsyncKeyState >= 0,
+                    // 积压回调全部被第一闸门拦掉, 不会造成二次移动
                     SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
-                    done();
-                    return;
                 }
+                NATIVE_DRAG.store(false, Ordering::SeqCst);
+                return;
             }
-            // 兜底: 找不到窗口(不应发生)时退回手动跟随
+            NATIVE_DRAG.store(false, Ordering::SeqCst);
+            // 兜底: 找不到窗口(不应发生)时退回手动跟随; 能走到这里说明按键确实按着
             if let Some(win) = drag_weak.upgrade() {
                 let window = win.window();
                 if window.is_maximized() {
@@ -1194,7 +1202,6 @@ fn main() {
                     pos.y + (dy * scale).round() as i32,
                 ));
             }
-            done();
         });
     }
     {
