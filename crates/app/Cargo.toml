@@ -42,6 +42,8 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    # 原生标题栏拖拽前确认左键仍按着, 避免状态滞后引发空拖拽
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 [build-dependencies]

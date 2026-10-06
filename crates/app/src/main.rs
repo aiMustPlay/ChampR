@@ -1149,13 +1149,41 @@ fn main() {
     });
 
     // -- 自绘标题栏(无边框主窗): 拖动 / 最小化 / 双击最大化 / 关闭 --
-    // Slint 没有内置的"拖动窗口"能力, 只能由标题栏把指针位移交给这里, 再 set_position。
+    // 拖动用 Win32 原生标题栏拖拽(ReleaseCapture + WM_NCLBUTTONDOWN/HTCAPTION):
+    // 系统接管整个拖动 —— 光标全程锁定(旧的 Slint 逐像素 set_position 方案会
+    // 每帧重算悬停控件、疯狂切换光标形状, 用户 2026-10-05 反馈"光标一直闪烁"),
+    // 且最大化窗口自动还原接续拖拽、贴边吸附也免费获得。
     {
         let drag_weak = sources_window.as_weak();
         sources_window.on_title_drag(move |dx, dy| {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+                GetAsyncKeyState, ReleaseCapture, VK_LBUTTON,
+            };
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                FindWindowW, SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+            };
+            // 防重入: 原生拖拽期间 SendMessage 一直阻塞到松手, 期间的回调直接丢
+            static NATIVE_DRAG: AtomicBool = AtomicBool::new(false);
+            if NATIVE_DRAG.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let done = || NATIVE_DRAG.store(false, Ordering::SeqCst);
+
+            let title: Vec<u16> = "ChampR".encode_utf16().chain(Some(0)).collect();
+            unsafe {
+                let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                // 物理按键状态优先: 按钮实际已松开(Slint pressed 滞后)则不启动原生拖拽
+                if hwnd != 0 && GetAsyncKeyState(VK_LBUTTON as i32) < 0 {
+                    ReleaseCapture();
+                    SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+                    done();
+                    return;
+                }
+            }
+            // 兜底: 找不到窗口(不应发生)时退回手动跟随
             if let Some(win) = drag_weak.upgrade() {
                 let window = win.window();
-                // 最大化状态下拖动: 先还原, 否则位置改不动(系统行为)
                 if window.is_maximized() {
                     window.set_maximized(false);
                 }
@@ -1166,6 +1194,7 @@ fn main() {
                     pos.y + (dy * scale).round() as i32,
                 ));
             }
+            done();
         });
     }
     {
