@@ -75,8 +75,6 @@ struct AppState {
     auto_pick: bool,
     /// 优先禁用名单(英雄 id, 按顺序取第一个还没被禁的)
     auto_ban_list: Vec<i64>,
-    /// 首选英雄名单(英雄 id, 取第一个)
-    auto_pick_list: Vec<i64>,
     /// 选人自动锁定阈值(秒): 剩余时间 <= 该值就锁定; 0 = 悬停后立刻锁定
     auto_pick_lock_seconds: f64,
     /// 上一次已提交的自动动作(action_id, champion_id, completed)。
@@ -188,7 +186,6 @@ impl Default for AppState {
             auto_ban: false,
             auto_pick: false,
             auto_ban_list: Vec::new(),
-            auto_pick_list: Vec::new(),
             auto_pick_lock_seconds: 0.0,
             auto_action_last: None,
             auto_accept_match: true,
@@ -402,7 +399,6 @@ fn main() {
     initial_state.auto_ban = saved_settings.auto_ban;
     initial_state.auto_pick = saved_settings.auto_pick;
     initial_state.auto_ban_list = saved_settings.auto_ban_list.clone();
-    initial_state.auto_pick_list = saved_settings.auto_pick_list.clone();
     initial_state.auto_pick_lock_seconds = saved_settings.auto_pick_lock_seconds;
     initial_state.reminder_tier = saved_settings.reminder_tier;
     // 显示器固定: 手动配置, 启动时枚举一次; 插拔显示器后重启 app 生效。
@@ -488,9 +484,7 @@ fn main() {
                 .join(",")
         };
         let ban_text = names_text(&saved_settings.auto_ban_list);
-        let pick_text = names_text(&saved_settings.auto_pick_list);
         sources_window.set_auto_ban_list_text(SharedString::from(&ban_text));
-        sources_window.set_auto_pick_list_text(SharedString::from(&pick_text));
 
         let mut status = format!(
             "自动禁人 {} | 自动选人 {}{}",
@@ -504,11 +498,6 @@ fn main() {
         );
         if saved_settings.auto_ban && saved_settings.auto_ban_list.is_empty() {
             status.push_str(" | 禁用名单为空, 自动禁人不会生效");
-        }
-        if saved_settings.auto_pick
-            && saved_settings.auto_pick_list.is_empty()
-        {
-            status.push_str(" | 首选为空, 将用你悬停的英雄或 OP.GG 该分路胜率最高");
         }
         sources_window.set_auto_select_status(SharedString::from(&status));
         info!("auto champ-select: {status}");
@@ -1147,20 +1136,6 @@ fn main() {
         settings.auto_ban_list = ids.clone();
         settings.save();
         info!("auto ban list updated: {ids:?}");
-    });
-
-    let state_pick_list = state.clone();
-    sources_window.on_auto_pick_list_edited(move |text| {
-        let ids = parse_champion_list(&text, &state_pick_list);
-        {
-            let mut s = state_pick_list.lock().unwrap();
-            s.auto_pick_list = ids.clone();
-            s.auto_action_last = None;
-        }
-        let mut settings = settings::Settings::load();
-        settings.auto_pick_list = ids.clone();
-        settings.save();
-        info!("auto pick list updated: {ids:?}");
     });
 
     // -- Main window: objective reminder tier (persisted) --
@@ -2715,7 +2690,6 @@ async fn maybe_auto_champ_select_action(
                 auto_ban: s.auto_ban,
                 auto_pick: s.auto_pick,
                 ban_list: s.auto_ban_list.clone(),
-                pick_list: s.auto_pick_list.clone(),
                 lock_before_seconds: s.auto_pick_lock_seconds,
             },
             s.static_names.clone(),

@@ -57,9 +57,6 @@ pub struct Settings {
     /// 优先禁用名单(英雄 id, 按顺序取第一个还没被禁的)。
     #[serde(default)]
     pub auto_ban_list: Vec<i64>,
-    /// 首选英雄名单(英雄 id, 取第一个)。
-    #[serde(default)]
-    pub auto_pick_list: Vec<i64>,
     /// 选人自动锁定阈值(秒): 剩余时间 <= 该值就锁定; 0 = 悬停后立刻锁定。
     /// 默认 3 秒 = 先悬停, 选人倒计时最后 3 秒才锁定, 留一个反悔窗口。
     #[serde(default = "default_auto_pick_lock_seconds")]
@@ -175,7 +172,6 @@ impl Default for Settings {
             auto_ban: default_true(),
             auto_pick: default_true(),
             auto_ban_list: Vec::new(),
-            auto_pick_list: Vec::new(),
             auto_pick_lock_seconds: default_auto_pick_lock_seconds(),
             reminder_tier: 0,
             pinned_monitor: default_pinned_monitor(),

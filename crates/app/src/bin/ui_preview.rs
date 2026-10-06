@@ -130,7 +130,6 @@ fn main() {
             ui.set_auto_ban_enabled(true);
             ui.set_auto_pick_enabled(true);
             ui.set_auto_ban_list_text(slint::SharedString::from("暗裔剑魔,影流之主"));
-            ui.set_auto_pick_list_text(slint::SharedString::from("九尾妖狐"));
             ui.set_auto_select_status(slint::SharedString::from(
                 "自动禁人 开 | 自动选人 开 | 锁定阈值 3s",
             ));

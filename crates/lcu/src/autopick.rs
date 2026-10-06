@@ -26,8 +26,6 @@ pub struct AutoPrefs {
     pub auto_pick: bool,
     /// 优先禁用的英雄 id(按顺序取第一个还没被禁掉的)
     pub ban_list: Vec<i64>,
-    /// 首选的英雄 id(按顺序取第一个; 空则用 OP.GG 该分路胜率最高的)
-    pub pick_list: Vec<i64>,
     /// 悬停后锁定: 剩余时间 <= 该秒数时锁定(0 = 悬停后立刻锁定)
     pub lock_before_seconds: f64,
 }
@@ -56,11 +54,10 @@ impl AutoPrefs {
             }
         };
         format!(
-            "自动禁人={} 名单={} | 自动选人={} 首选={} | 锁定阈值={:.0}s",
+            "自动禁人={} 名单={} | 自动选人={} | 锁定阈值={:.0}s",
             self.auto_ban,
             list(&self.ban_list),
             self.auto_pick,
-            list(&self.pick_list),
             self.lock_before_seconds
         )
     }
@@ -270,16 +267,9 @@ pub fn decide(
                 }
             }
             "pick" if prefs.auto_pick => {
-                // 目标英雄: 用户已悬停的 > 首选名单 > OP.GG 该分路最高胜率
+                // 目标英雄: 用户已悬停的 > OP.GG 该分路最高胜率
                 let hovered = local_champion(session, local_cell);
-                let (target, reason) = if hovered > 0 && prefs.pick_list.is_empty() {
-                    (
-                        hovered,
-                        format!("沿用你已选的 {}", champion_name(names, hovered)),
-                    )
-                } else if let Some(id) = prefs.pick_list.first().copied() {
-                    (id, format!("首选名单: {}", champion_name(names, id)))
-                } else if hovered > 0 {
+                let (target, reason) = if hovered > 0 {
                     (hovered, format!("沿用你已悬停的 {}", champion_name(names, hovered)))
                 } else {
                     match best_winrate_champion(sections, session, local_cell) {
@@ -531,7 +521,6 @@ mod tests {
         }]]);
         let prefs = AutoPrefs {
             auto_pick: true,
-            pick_list: vec![103],
             ..Default::default()
         };
         assert_eq!(
@@ -544,13 +533,13 @@ mod tests {
     fn hovers_first_then_locks_when_time_runs_out() {
         let prefs = AutoPrefs {
             auto_pick: true,
-            pick_list: vec![103],
             lock_before_seconds: 5.0,
             ..Default::default()
         };
+        let sections = sections_with(103, "middle", "54.3%", 1200);
 
-        // 还没选 → 悬停(completed = false)
-        match decide(&pick_session(0, 0, 20000), &prefs, &names(), &HashMap::new()) {
+        // 还没选 → 悬停(completed = false), 目标来自 OP.GG 该分路最高胜率
+        match decide(&pick_session(0, 0, 20000), &prefs, &names(), &sections) {
             AutoAction::Pick {
                 action_id,
                 champion_id,
@@ -560,29 +549,28 @@ mod tests {
                 assert_eq!(action_id, 21);
                 assert_eq!(champion_id, 103);
                 assert!(!completed);
-                assert!(reason.contains("首选名单"), "{reason}");
+                assert!(reason.contains("胜率最高"), "{reason}");
             }
             other => panic!("expected hover, got {other:?}"),
         }
 
         // 已是目标英雄但时间还早 → 什么都不做
         assert_eq!(
-            decide(&pick_session(103, 103, 20000), &prefs, &names(), &HashMap::new()),
+            decide(&pick_session(103, 103, 20000), &prefs, &names(), &sections),
             AutoAction::None
         );
 
         // 剩余 3 秒(<= 5) → 锁定
-        match decide(&pick_session(103, 103, 3000), &prefs, &names(), &HashMap::new()) {
+        match decide(&pick_session(103, 103, 3000), &prefs, &names(), &sections) {
             AutoAction::Pick { completed, .. } => assert!(completed),
             other => panic!("expected lock, got {other:?}"),
         }
     }
 
     #[test]
-    fn respects_user_hover_when_no_preferred_list() {
+    fn respects_user_hover() {
         let prefs = AutoPrefs {
             auto_pick: true,
-            pick_list: vec![],
             lock_before_seconds: 0.0,
             ..Default::default()
         };
@@ -604,7 +592,6 @@ mod tests {
     fn falls_back_to_best_winrate_for_the_position() {
         let prefs = AutoPrefs {
             auto_pick: true,
-            pick_list: vec![],
             lock_before_seconds: 5.0,
             ..Default::default()
         };

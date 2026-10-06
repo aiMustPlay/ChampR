@@ -457,11 +457,10 @@ component RunesPanel inherits ScrollView {
     // Counter 手动对位候选: 敌方已选/悬停英雄(id 与中文名平行数组)
     in-out property <[int]> counter-cand-ids: [];
     in-out property <[string]> counter-cand-names: [];
-    // 自动禁人 / 自动选人(用户 2026-10-05): 开关 + 名单(界面按英雄中文名显示)
+    // 自动禁人 / 自动选人(用户 2026-10-05): 开关 + 禁用名单(界面按英雄中文名显示)
     in-out property <bool> auto-ban-enabled: false;
     in-out property <bool> auto-pick-enabled: false;
     in-out property <string> auto-ban-list-text: "";
-    in-out property <string> auto-pick-list-text: "";
     in-out property <string> auto-select-status: "";
 
     // --- callbacks (转发给主窗) ---
@@ -474,7 +473,6 @@ component RunesPanel inherits ScrollView {
     callback auto-ban-toggled(bool);
     callback auto-pick-toggled(bool);
     callback auto-ban-list-edited(string);
-    callback auto-pick-list-edited(string);
     // 手动点选对位英雄 id(敌方已锁)
     callback counter-pick-opponent(int);
 
@@ -630,25 +628,6 @@ component RunesPanel inherits ScrollView {
                 edited(text) => {
                     root.auto-ban-list-text = text;
                     root.auto-ban-list-edited(text);
-                }
-            }
-        }
-        HorizontalLayout {
-            spacing: Tokens.s-sm;
-            Text {
-                text: "首选名单";
-                width: 68px;
-                font-size: Tokens.f-aux;
-                color: Tokens.c-text-secondary;
-                vertical-alignment: center;
-            }
-            LineEdit {
-                text: root.auto-pick-list-text;
-                placeholder-text: "例如: 九尾妖狐(留空则用你悬停的英雄或 OP.GG 该分路最高胜率)";
-                horizontal-stretch: 1;
-                edited(text) => {
-                    root.auto-pick-list-text = text;
-                    root.auto-pick-list-edited(text);
                 }
             }
         }
@@ -952,11 +931,10 @@ export component SourcesWindow inherits Window {
     in-out property <string> position-label: "";
     in-out property <bool> auto-apply-enabled: false;
     in-out property <bool> auto-builds-enabled: false;
-    // 自动禁人/选人(用户 2026-10-05): 开关 + 名单文本(落库时解析成英雄 id)
+    // 自动禁人/选人(用户 2026-10-05): 开关 + 禁用名单文本(落库时解析成英雄 id)
     in-out property <bool> auto-ban-enabled: false;
     in-out property <bool> auto-pick-enabled: false;
     in-out property <string> auto-ban-list-text: "";
-    in-out property <string> auto-pick-list-text: "";
     in-out property <string> auto-select-status: "";
     in-out property <bool> counter-available: false;
     in-out property <string> counter-summary: "";
@@ -996,11 +974,10 @@ export component SourcesWindow inherits Window {
     callback auto-apply-toggled(bool);
     callback auto-builds-toggled(bool);
     callback counter-pick-opponent(int);
-    // 自动禁人/选人(用户 2026-10-05): 开关与名单
+    // 自动禁人/选人(用户 2026-10-05): 开关与禁用名单
     callback auto-ban-toggled(bool);
     callback auto-pick-toggled(bool);
     callback auto-ban-list-edited(string);
-    callback auto-pick-list-edited(string);
 
     // 外层: 标题栏 + 内容(内容自身带 16px 内边距, 标题栏要通栏, 所以分两层)
     VerticalLayout {
@@ -1159,7 +1136,6 @@ export component SourcesWindow inherits Window {
                     auto-ban-enabled <=> root.auto-ban-enabled;
                     auto-pick-enabled <=> root.auto-pick-enabled;
                     auto-ban-list-text <=> root.auto-ban-list-text;
-                    auto-pick-list-text <=> root.auto-pick-list-text;
                     auto-select-status: root.auto-select-status;
                     apply-rune-clicked(index) => {
                         root.apply-rune-clicked(index);
@@ -1184,9 +1160,6 @@ export component SourcesWindow inherits Window {
                     }
                     auto-ban-list-edited(text) => {
                         root.auto-ban-list-edited(text);
-                    }
-                    auto-pick-list-edited(text) => {
-                        root.auto-pick-list-edited(text);
                     }
                     counter-pick-opponent(cid) => {
                         root.counter-pick-opponent(cid);
