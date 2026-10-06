@@ -92,11 +92,11 @@ export global Tokens {
     out property <length> panel-match-h: 210px;
     out property <length> panel-log-h: 340px;
 
-    // 窗口尺寸: 统一黄金比 1.618 (用户 2026-10-03 拍板"按黄金比例、比现在大 2 倍")
-    // 主窗 830×1343: 黄金比下 100% 缩放(2560×1440, 工作区高 1392)能"连外框一起"
-    // 完整放下的尺寸; 更大的数值会被 place_window_in_work_area 自动缩回。
-    out property <length> win-main-w: 830px;
-    out property <length> win-main-h: 1343px;
+    // 窗口尺寸: 主窗 680×1100(2026-10-05 用户反馈"自动禁人那块的窗口太宽"——
+    // 符文页内容不需要 830 那么宽)。表格验证: 固定列合计 518 + 卡片开销 59,
+    // 680 下装备弹性列仍有 ≈103px; 最小宽 620 是装备列的可读下限。
+    out property <length> win-main-w: 680px;
+    out property <length> win-main-h: 1100px;
     out property <length> win-main-min-w: 620px;
     out property <length> win-main-min-h: 1003px;
     out property <length> win-runes-w: 720px;

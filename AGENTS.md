@@ -45,7 +45,8 @@ ChampR 是一个 Windows 英雄联盟助手：
     - 最大化状态下先 `set_maximized(false)` 再移动, 否则位置改不动
     - 字形用 Latin-1 区(`—` U+2014 / `×` U+00D7): `✕`(U+2715) 在默认字体里是空白
     - 代价: 没有系统边框 → 拖动边缘缩放失效; `main.rs::FRAME_W/FRAME_H` 因此改成 0
-      (无边框时外框 == 客户区, 实测 outer=830x1343 == client=830x1343)
+      (无边框时外框 == 客户区; 主窗 2026-10-05 起 680×1100, 用户反馈 830 对符文页太宽,
+      表格固定列 518 + 开销 59, 装备弹性列 ≈103px 正好够用; 620 是最小可读宽)
   - Settings 窗口仍用原生标题栏(未被要求改)
   - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings|champselect]`
     把窗口用软件渲染器画进 `.cache/ui-preview-*.png`, 布局改动先自检再交付
