@@ -1441,6 +1441,39 @@ fn setup_tray(main_weak: Weak<SourcesWindow>) {
                             if let Some(win) = w.upgrade() {
                                 let _ = win.show();
                                 win.window().request_redraw();
+                                // ⚠ show() 只保证可见, **不抬 Z 序**: 对局是无边框全屏窗口,
+                                // 盖在 ChampR 上面, 用户点托盘看到的就是"什么都没出来"
+                                // (2026-10-05 报障: 截图确认被 League of Legends 客户端压住)。
+                                // TopMost→立即取消 = 抬到最上面但不抢焦点/不留置顶。
+                                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                    FindWindowW, SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST,
+                                    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+                                };
+                                let title: Vec<u16> =
+                                    "ChampR".encode_utf16().chain(Some(0)).collect();
+                                let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+                                if hwnd != 0 {
+                                    unsafe {
+                                        SetWindowPos(
+                                            hwnd,
+                                            HWND_TOPMOST,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                                        );
+                                        SetWindowPos(
+                                            hwnd,
+                                            HWND_NOTOPMOST,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            SWP_NOMOVE | SWP_NOSIZE,
+                                        );
+                                    }
+                                }
                             }
                         });
                     }
