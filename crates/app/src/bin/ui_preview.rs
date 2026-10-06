@@ -153,17 +153,17 @@ fn main() {
             ui.set_table_columns(preview_unified_columns());
             ui.set_table_rows(slint::ModelRc::new(slint::VecModel::from(vec![
                 preview_row(vec![], "我方", true, false, false),
-                preview_row(vec!["上", "杰斯", "对手上单#1234", "铂金 III", "53%", "51.2%", "-", "-", "-", "1240 场"], "", true, false, false),
-                preview_row(vec!["野", "盲僧", "打野爸爸#8888", "钻石 IV", "56%", "52.8%", "-", "-", "-", "2310 场"], "", true, false, false),
-                preview_row(vec!["中", "阿卡丽", "测试召唤师#1234", "黄金 II", "50%", "50.4%", "-", "-", "-", "1870 场"], "", true, true, false),
-                preview_row(vec!["下", "卡莎", "ADC#6666", "铂金 I", "52%", "51.9%", "-", "-", "-", "3020 场"], "", true, false, false),
-                preview_row(vec!["辅", "洛", "辅助#2333", "白银 I", "54%", "52.1%", "-", "-", "-", "980 场"], "", true, false, false),
+                preview_row(vec!["上", "杰斯", "对手上单#1234", "铂金 III", "53%", "51.2%", "-", "-", "-", "攻187", "1240 场"], "", true, false, false),
+                preview_row(vec!["野", "盲僧", "打野爸爸#8888", "钻石 IV", "56%", "52.8%", "-", "-", "-", "法240", "2310 场"], "", true, false, false),
+                preview_row(vec!["中", "阿卡丽", "测试召唤师#1234", "黄金 II", "50%", "50.4%", "-", "-", "-", "攻213", "1870 场"], "", true, true, false),
+                preview_row(vec!["下", "卡莎", "ADC#6666", "铂金 I", "52%", "51.9%", "-", "-", "-", "法165", "3020 场"], "", true, false, false),
+                preview_row(vec!["辅", "洛", "辅助#2333", "白银 I", "54%", "52.1%", "-", "-", "-", "攻98", "980 场"], "", true, false, false),
                 preview_row(vec![], "敌方", false, false, false),
-                preview_row(vec!["上", "剑魔", "敌方上单#1111", "铂金 II", "49%", "49.6%", "-", "-", "-", "1120 场"], "", false, false, false),
-                preview_row(vec!["野", "豹女", "敌方打野#2222", "钻石 III", "57%", "53.4%", "-", "-", "-", "2760 场"], "", false, false, false),
-                preview_row(vec!["中", "劫", "敌方中单#3333", "黄金 I", "48%", "48.9%", "-", "-", "-", "2050 场"], "", false, false, true),
-                preview_row(vec!["下", "厄斐琉斯", "敌方ADC#4444", "铂金 IV", "51%", "51.6%", "-", "-", "-", "1580 场"], "", false, false, false),
-                preview_row(vec!["辅", "牛头", "敌方辅助#5555", "黄金 III", "53%", "52.4%", "-", "-", "-", "890 场"], "", false, false, false),
+                preview_row(vec!["上", "剑魔", "敌方上单#1111", "铂金 II", "49%", "49.6%", "-", "-", "-", "法450", "1120 场"], "", false, false, false),
+                preview_row(vec!["野", "豹女", "敌方打野#2222", "钻石 III", "57%", "53.4%", "-", "-", "-", "攻231", "2760 场"], "", false, false, false),
+                preview_row(vec!["中", "劫", "敌方中单#3333", "黄金 I", "48%", "48.9%", "-", "-", "-", "攻305", "2050 场"], "", false, false, true),
+                preview_row(vec!["下", "厄斐琉斯", "敌方ADC#4444", "铂金 IV", "51%", "51.6%", "-", "-", "-", "法120", "1580 场"], "", false, false, false),
+                preview_row(vec!["辅", "牛头", "敌方辅助#5555", "黄金 III", "53%", "52.4%", "-", "-", "-", "攻156", "890 场"], "", false, false, false),
             ])));
             ui.set_table_notes(slint::ModelRc::new(slint::VecModel::from(vec![
                 slint::SharedString::from("本机位置 中 | 对位 敌方中 劫"),
@@ -194,17 +194,17 @@ fn main() {
             ui.set_table_columns(preview_unified_columns());
             ui.set_table_rows(slint::ModelRc::new(slint::VecModel::from(vec![
                 preview_row(vec![], "我方", true, false, false),
-                preview_row(vec!["上", "杰斯", "对手上单#1234", "铂金 III", "53%", "51.2%", "2/3/1", "145", "-", "三相之力 · 铁板靴"], "", true, false, false),
-                preview_row(vec!["野", "盲僧", "打野爸爸#8888", "钻石 IV", "56%", "52.8%", "4/1/6", "182", "-", "渴血战斧 · 铁板靴 · 长者之誓"], "", true, false, false),
-                preview_row(vec!["中", "阿卡丽", "测试召唤师#1234", "黄金 II", "50%", "50.4%", "8/2/3", "196", "-", "暗影阔剑 · 法师之靴"], "", true, true, false),
-                preview_row(vec!["下", "卡莎", "ADC#6666", "铂金 I", "52%", "51.9%", "5/4/2", "210", "-", "无穷之刃 · 狂徒铠甲"], "", true, false, false),
-                preview_row(vec!["辅", "洛", "辅助#2333", "白银 I", "54%", "52.1%", "1/5/9", "32", "-", "骑士之誓 · 圣物之盾 (阵亡 7s)"], "", true, false, false),
+                preview_row(vec!["上", "杰斯", "对手上单#1234", "铂金 III", "53%", "51.2%", "2/3/1", "145", "-", "攻187", "三相之力 · 铁板靴"], "", true, false, false),
+                preview_row(vec!["野", "盲僧", "打野爸爸#8888", "钻石 IV", "56%", "52.8%", "4/1/6", "182", "-", "法240", "渴血战斧 · 铁板靴 · 长者之誓"], "", true, false, false),
+                preview_row(vec!["中", "阿卡丽", "测试召唤师#1234", "黄金 II", "50%", "50.4%", "8/2/3", "196", "-", "攻213", "暗影阔剑 · 法师之靴"], "", true, true, false),
+                preview_row(vec!["下", "卡莎", "ADC#6666", "铂金 I", "52%", "51.9%", "5/4/2", "210", "-", "法165", "无穷之刃 · 狂徒铠甲"], "", true, false, false),
+                preview_row(vec!["辅", "洛", "辅助#2333", "白银 I", "54%", "52.1%", "1/5/9", "32", "-", "攻98", "骑士之誓 · 圣物之盾 (阵亡 7s)"], "", true, false, false),
                 preview_row(vec![], "敌方", false, false, false),
-                preview_row(vec!["上", "剑魔", "敌方上单#1111", "铂金 II", "49%", "49.6%", "3/2/0", "160", "-", "斯特拉克的挑战护手"], "", false, false, false),
-                preview_row(vec!["野", "豹女", "敌方打野#2222", "钻石 III", "57%", "53.4%", "2/4/5", "150", "-", "冰霜之牙"], "", false, false, false),
-                preview_row(vec!["中", "劫", "敌方中单#3333", "黄金 I", "48%", "48.9%", "6/1/2", "188", "-", "幽梦之灵 · 法师之靴"], "", false, false, true),
-                preview_row(vec!["下", "厄斐琉斯", "敌方ADC#4444", "铂金 IV", "51%", "51.6%", "4/3/1", "205", "-", "无尽之刃 · 幻影之舞"], "", false, false, false),
-                preview_row(vec!["辅", "牛头", "敌方辅助#5555", "黄金 III", "53%", "52.4%", "0/6/7", "28", "-", "骑士之誓 · 山脉之戒"], "", false, false, false),
+                preview_row(vec!["上", "剑魔", "敌方上单#1111", "铂金 II", "49%", "49.6%", "3/2/0", "160", "-", "法450", "斯特拉克的挑战护手"], "", false, false, false),
+                preview_row(vec!["野", "豹女", "敌方打野#2222", "钻石 III", "57%", "53.4%", "2/4/5", "150", "-", "攻231", "冰霜之牙"], "", false, false, false),
+                preview_row(vec!["中", "劫", "敌方中单#3333", "黄金 I", "48%", "48.9%", "6/1/2", "188", "-", "攻305", "幽梦之灵 · 法师之靴"], "", false, false, true),
+                preview_row(vec!["下", "厄斐琉斯", "敌方ADC#4444", "铂金 IV", "51%", "51.6%", "4/3/1", "205", "-", "法120", "无尽之刃 · 幻影之舞"], "", false, false, false),
+                preview_row(vec!["辅", "牛头", "敌方辅助#5555", "黄金 III", "53%", "52.4%", "0/6/7", "28", "-", "攻156", "骑士之誓 · 山脉之戒"], "", false, false, false),
             ])));
             ui.set_table_notes(slint::ModelRc::new(slint::VecModel::from(vec![
                 slint::SharedString::from("我的金币 8420 | 加点 Q5W3E2R1 | 符文 电刑,猛然冲击,眼球收集器,贪欲猎手"),
@@ -257,14 +257,15 @@ fn preview_unified_columns() -> slint::ModelRc<TableColumn> {
     slint::ModelRc::new(slint::VecModel::from(vec![
         preview_column("位", 30.0, false),
         preview_column("英雄", 80.0, true),
-        preview_column("召唤师", 92.0, false),
-        preview_column("段位", 60.0, false),
-        preview_column("个人胜率", 60.0, true),
-        preview_column("英雄胜率", 60.0, false),
+        preview_column("召唤师", 86.0, false),
+        preview_column("段位", 56.0, false),
+        preview_column("个人胜率", 56.0, true),
+        preview_column("英雄胜率", 56.0, false),
         preview_column("KDA", 58.0, true),
         preview_column("补刀", 40.0, true),
         preview_column("等级", 32.0, true),
-        preview_column("装备", 189.0, false),
+        preview_column("攻/法", 54.0, true),
+        preview_column("装备", 73.0, false),
     ]))
 }
 

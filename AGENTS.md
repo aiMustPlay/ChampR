@@ -52,7 +52,7 @@ ChampR 是一个 Windows 英雄联盟助手：
     - 字形用 Latin-1 区(`—` U+2014 / `×` U+00D7): `✕`(U+2715) 在默认字体里是空白
     - 代价: 没有系统边框 → 拖动边缘缩放失效; `main.rs::FRAME_W/FRAME_H` 因此改成 0
       (无边框时外框 == 客户区; 主窗 2026-10-05 起 680×1100, 用户反馈 830 对符文页太宽,
-      表格固定列 518 + 开销 59, 装备弹性列 ≈103px 正好够用; 620 是最小可读宽)
+      表格固定列 548 + 开销 59, 装备弹性列 ≈73px(含攻/法列); 620 是最小可读宽)
   - Settings 窗口仍用原生标题栏(未被要求改)
   - 无头预览: `cargo run -p champr --bin ui_preview [-- runes|settings|champselect]`
     把窗口用软件渲染器画进 `.cache/ui-preview-*.png`, 布局改动先自检再交付
@@ -229,7 +229,11 @@ Rust TTS
   维护选人、游戏过程中的所有关键数据")。数据模型 lcu/advisor.rs::DataTable
   (列 = title/width/emphasis, 行 = cells/section/mine_team/mine/opponent),
   UI 是 app.slint 的 DataTable 组件; **列在选人与对局两个阶段完全相同**:
-  `位 / 英雄 / 召唤师 / 段位 / 个人胜率 / 英雄胜率 / KDA / 补刀 / 等级 / 装备(弹性列)`
+  `位 / 英雄 / 召唤师 / 段位 / 个人胜率 / 英雄胜率 / KDA / 补刀 / 等级 / 攻/法 / 装备(弹性列)`
+  - **攻/法列**(2026-10-05 用户要求): 展示该玩家**总攻击力或总法强, 取较大者**
+    (射手出"攻187"、法师出"法240")。数据源 = Live Client Data 每个
+    allPlayers 的 championStats.attackDamage/abilityPower(match_context 解析,
+    `LivePlayer::dominant_power_label` 统一出文案; 数据未到/选人期显示 "-")。
   - **个人胜率 vs 英雄胜率(用户 2026-10-05: "我要个人战绩")**:
     - `个人胜率` = **该玩家自己**本赛季单双排总胜率, 由 LCU
       `/lol-ranked/v1/ranked-stats/{puuid}` 的 wins/losses 算出(lcu::advisor::RankInfo,

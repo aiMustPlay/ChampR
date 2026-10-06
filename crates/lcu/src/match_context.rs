@@ -56,6 +56,10 @@ pub struct LivePlayer {
     pub spell_one: String,
     pub spell_two: String,
     pub is_bot: bool,
+    /// championStats.attackDamage / abilityPower(allPlayers 每个玩家都带)——
+    /// 表格「攻/法」列的数据源(2026-10-05 用户要求: 展示总攻击或总法强, 取大者)。
+    pub attack_damage: f64,
+    pub ability_power: f64,
 }
 
 impl LivePlayer {
@@ -110,11 +114,36 @@ impl LivePlayer {
             )
             .to_string(),
             is_bot: v_bool(player, "isBot"),
+            attack_damage: player
+                .get("championStats")
+                .and_then(|s| s.get("attackDamage"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            ability_power: player
+                .get("championStats")
+                .and_then(|s| s.get("abilityPower"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
         }
     }
 
     pub fn kda(&self) -> String {
         format!("{}/{}/{}", self.kills, self.deaths, self.assists)
+    }
+
+    /// 攻/法面板(取较大的一项): AD 占优 → "攻187", AP 占优 → "法240";
+    /// 都为 0(还没进游戏/数据延迟) → 返回 None, 调用方显示 "-"。
+    /// 依据: 用户 2026-10-05 "图表展示总的攻击力或者法强即可, 取最大值"。
+    pub fn dominant_power_label(&self) -> Option<String> {
+        let best = self.attack_damage.max(self.ability_power);
+        if best <= 0.0 {
+            return None;
+        }
+        if self.attack_damage >= self.ability_power {
+            Some(format!("攻{}", self.attack_damage.round() as i64))
+        } else {
+            Some(format!("法{}", self.ability_power.round() as i64))
+        }
     }
 }
 
@@ -704,6 +733,7 @@ mod tests {
             "allPlayers": [
                 {
                     "championName": "Aatrox",
+                    "championStats": {"attackDamage": 187.0, "abilityPower": 0.0},
                     "isDead": false,
                     "items": [{"itemID": 1055, "count": 1}, {"itemID": 0, "count": 0}],
                     "level": 8,
@@ -724,6 +754,7 @@ mod tests {
                 },
                 {
                     "championName": "Zed",
+                    "championStats": {"attackDamage": 0.0, "abilityPower": 240.6},
                     "isDead": true,
                     "items": [{"itemID": 6692, "count": 1}],
                     "level": 9,
@@ -760,6 +791,19 @@ mod tests {
     }
 
     #[test]
+    fn dominant_power_picks_the_larger_stat() {
+        let mut p = LivePlayer::default();
+        // 双方都为 0(未开局/数据延迟) → None, 界面上显示 "-"
+        assert_eq!(p.dominant_power_label(), None);
+        p.attack_damage = 187.0;
+        assert_eq!(p.dominant_power_label().as_deref(), Some("攻187"));
+        p.ability_power = 240.5;
+        assert_eq!(p.dominant_power_label().as_deref(), Some("法241"));
+        p.attack_damage = 250.0;
+        assert_eq!(p.dominant_power_label().as_deref(), Some("攻250"));
+    }
+
+    #[test]
     fn parses_full_live_snapshot() {
         let snap = LiveSnapshot::from_all_game_data(&sample_game_data()).unwrap();
 
@@ -772,10 +816,13 @@ mod tests {
         assert_eq!(me.kda(), "3/1/0");
         assert_eq!(me.creep_score, 64);
         assert_eq!(me.items, vec![(1055, 1)]);
+        // 攻/法列数据源: 每个 allPlayers 的 championStats 都被解析, 取大者
+        assert_eq!(me.dominant_power_label().as_deref(), Some("攻187"));
 
         let opp = snap.lane_opponent().unwrap();
         assert_eq!(opp.champion_name, "Zed");
         assert!(opp.is_dead);
+        assert_eq!(opp.dominant_power_label().as_deref(), Some("法241"));
         assert!((opp.respawn_timer - 9.5).abs() < 0.001);
 
         let active = snap.active.as_ref().unwrap();

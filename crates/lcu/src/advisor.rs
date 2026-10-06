@@ -1173,17 +1173,20 @@ pub struct RosterEntry {
     pub opponent: bool,
 }
 
-/// 统一状态表格的列(选人与对局共用): 选人期先填 段位/胜率, 开局后填 KDA/补刀/等级/装备。
-const MATCH_COLUMNS: [(&str, i32, bool); 10] = [
+/// 统一状态表格的列(选人与对局共用): 选人期先填 段位/胜率, 开局后填 KDA/补刀/等级/攻法/装备。
+/// 「攻/法」(2026-10-05 用户要求): 展示总攻击力或总法强, 取较大者(射手出攻、法师出法),
+/// 开局前/数据延迟时显示 "-"。
+const MATCH_COLUMNS: [(&str, i32, bool); 11] = [
     ("位", 30, false),
     ("英雄", 80, true),
-    ("召唤师", 92, false),
-    ("段位", 60, false),
-    ("个人胜率", 60, true),
-    ("英雄胜率", 60, false),
+    ("召唤师", 86, false),
+    ("段位", 56, false),
+    ("个人胜率", 56, true),
+    ("英雄胜率", 56, false),
     ("KDA", 58, true),
     ("补刀", 40, true),
     ("等级", 32, true),
+    ("攻/法", 54, true),
     ("装备", 0, false), // 弹性列; 选人阶段这一列放"场次"(见下)
 ];
 
@@ -1395,6 +1398,7 @@ pub fn build_champ_select_table(
                 "-".to_string(), // KDA: 对局开始后才有
                 "-".to_string(), // 补刀
                 "-".to_string(), // 等级
+                "-".to_string(), // 攻/法: 对局开始后才有(Live championStats)
                 or_dash(&entry.games), // 选人期装备列先放"场次"(样本量), 开局换成装备
             ],
             mine_team: entry.mine_team,
@@ -1581,6 +1585,8 @@ pub fn build_live_table(
                 or_dash(&player.kda()),
                 player.creep_score.to_string(),
                 player.level.to_string(),
+                // 攻/法: 总攻击或总法强取大者(用户 2026-10-05), 数据未到显示 "-"
+                or_dash(&player.dominant_power_label().unwrap_or_default()),
                 or_dash(&items),
             ],
             mine_team: player.team == local_team,
