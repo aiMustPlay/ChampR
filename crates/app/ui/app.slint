@@ -607,7 +607,7 @@ component RunesPanel inherits ScrollView {
             }
         }
         Text {
-            text: root.auto-select-status != "" ? root.auto-select-status : "自动禁人/选人: 名单填英雄中文名, 逗号分隔; 选人先悬停, 到阈值再锁定。";
+            text: root.auto-select-status != "" ? root.auto-select-status : "自动禁人/选人: 名单填英雄中文名, 逗号分隔; 选人不做预选, 到阈值一次锁定。";
             font-size: Tokens.f-mini;
             color: Tokens.c-text-faint;
             wrap: word-wrap;

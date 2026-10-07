@@ -49,16 +49,16 @@ pub struct Settings {
     /// (什么都不做), 填了名单才真正生效 —— 即"开了也不会做错事"。
     #[serde(default = "default_true")]
     pub auto_ban: bool,
-    /// 自动选人(先悬停, 倒计时到阈值再锁定)。默认**开**(用户要求"默认选人"):
-    /// 优先沿用你自己悬停的英雄, 只有没悬停时才用 OP.GG 该分路最高胜率,
-    /// 且永远留 auto_pick_lock_seconds 的反悔窗口。
+    /// 自动选人(**不做预选**, 倒计时到阈值一次性锁定; 预选阶段 2026-10-05 被用户拍板删除)。
+    /// 默认**开**(用户要求"默认选人"): 锁定目标优先沿用你自己悬停的英雄,
+    /// 没悬停时才用 OP.GG 该分路最高胜率。
     #[serde(default = "default_true")]
     pub auto_pick: bool,
     /// 优先禁用名单(英雄 id, 按顺序取第一个还没被禁的)。
     #[serde(default)]
     pub auto_ban_list: Vec<i64>,
-    /// 选人自动锁定阈值(秒): 剩余时间 <= 该值就锁定; 0 = 悬停后立刻锁定。
-    /// 默认 3 秒 = 先悬停, 选人倒计时最后 3 秒才锁定, 留一个反悔窗口。
+    /// 选人自动锁定阈值(秒): 剩余时间 <= 该值就提交锁定; 0 = 轮到我就直接锁定。
+    /// 默认 3 秒 = 倒计时最后 3 秒才出手, 之前绝不碰客户端, 留了整段的反悔窗口。
     #[serde(default = "default_auto_pick_lock_seconds")]
     pub auto_pick_lock_seconds: f64,
     /// Objective reminder tier: 0 = all, 1 = key events only, 2 = quiet (log only).
@@ -94,7 +94,7 @@ fn default_ai_backend() -> String {
 }
 
 fn default_auto_pick_lock_seconds() -> f64 {
-    // 先悬停, 最后 3 秒锁定: 用户还有机会自己改英雄
+    // 倒计时最后 3 秒才一次性锁定: 之前过程全是用户的, 工具不插手
     3.0
 }
 

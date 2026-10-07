@@ -22,11 +22,11 @@ use crate::web::StaticNames;
 pub struct AutoPrefs {
     /// 自动禁人
     pub auto_ban: bool,
-    /// 自动选人(先悬停, 快到时锁定)
+    /// 自动选人(到点一次性锁定; **预选逻辑已整体移除**: 不再替用户悬停)
     pub auto_pick: bool,
     /// 优先禁用的英雄 id(按顺序取第一个还没被禁掉的)
     pub ban_list: Vec<i64>,
-    /// 悬停后锁定: 剩余时间 <= 该秒数时锁定(0 = 悬停后立刻锁定)
+    /// 锁定时机: 剩余时间 <= 该秒数时才提交锁定(0 = 轮到我就直接锁定)
     pub lock_before_seconds: f64,
 }
 
@@ -74,11 +74,10 @@ pub enum AutoAction {
         champion_id: i64,
         reason: String,
     },
-    /// 选人: 先悬停(completed=false), 到时锁定(completed=true)
+    /// 选人: 到点直接锁定(不再有 completed=false 的预选阶段, 用户 2026-10-05 拍板删除)
     Pick {
         action_id: i64,
         champion_id: i64,
-        completed: bool,
         reason: String,
     },
 }
@@ -270,12 +269,12 @@ pub fn decide(
                 // 目标英雄: 用户已悬停的 > OP.GG 该分路最高胜率
                 let hovered = local_champion(session, local_cell);
                 let (target, reason) = if hovered > 0 {
-                    (hovered, format!("沿用你已悬停的 {}", champion_name(names, hovered)))
+                    (hovered, format!("锁定你已悬停的 {}", champion_name(names, hovered)))
                 } else {
                     match best_winrate_champion(sections, session, local_cell) {
                         Some(id) => (
                             id,
-                            format!("OP.GG 分路胜率最高: {}", champion_name(names, id)),
+                            format!("锁定 OP.GG 分路胜率最高: {}", champion_name(names, id)),
                         ),
                         None => return AutoAction::None,
                     }
@@ -284,28 +283,17 @@ pub fn decide(
                     return AutoAction::None;
                 }
 
-                // lock_before_seconds = 0 表示悬停后立刻锁定; > 0 则等到剩余时间进入阈值
-                let should_lock = if prefs.lock_before_seconds <= 0.0 {
-                    true
-                } else {
-                    *remaining <= prefs.lock_before_seconds
-                };
-                if *current_champion == target {
-                    if should_lock {
-                        return AutoAction::Pick {
-                            action_id: *action_id,
-                            champion_id: target,
-                            completed: true,
-                            reason: format!("锁定 {}", champion_name(names, target)),
-                        };
-                    }
-                    // 已是目标英雄, 等锁定时机
+                // 预选逻辑已删除(用户 2026-10-05 拍板): 不替用户悬停, 只在剩余时间
+                // 进入阈值的那一刻**一次性锁定**(completed=true 的 PATCH 同时选定并确认)。
+                // lock_before_seconds <= 0 表示轮到我就直接锁。
+                let should_lock =
+                    prefs.lock_before_seconds <= 0.0 || *remaining <= prefs.lock_before_seconds;
+                if !should_lock {
                     return AutoAction::None;
                 }
                 return AutoAction::Pick {
                     action_id: *action_id,
                     champion_id: target,
-                    completed: false,
                     reason,
                 };
             }
@@ -530,7 +518,8 @@ mod tests {
     }
 
     #[test]
-    fn hovers_first_then_locks_when_time_runs_out() {
+    fn no_preselect_locks_exactly_at_the_threshold() {
+        // 预选已整体删除(用户 2026-10-05): 阈值前绝不动作, 到点一次锁定
         let prefs = AutoPrefs {
             auto_pick: true,
             lock_before_seconds: 5.0,
@@ -538,32 +527,41 @@ mod tests {
         };
         let sections = sections_with(103, "middle", "54.3%", 1200);
 
-        // 还没选 → 悬停(completed = false), 目标来自 OP.GG 该分路最高胜率
-        match decide(&pick_session(0, 0, 20000), &prefs, &names(), &sections) {
-            AutoAction::Pick {
-                action_id,
-                champion_id,
-                completed,
-                reason,
-            } => {
-                assert_eq!(action_id, 21);
-                assert_eq!(champion_id, 103);
-                assert!(!completed);
-                assert!(reason.contains("胜率最高"), "{reason}");
-            }
-            other => panic!("expected hover, got {other:?}"),
-        }
+        // 还剩 20 秒 + 没人悬停 → 什么都不做(以前会预选, 现在绝不碰客户端)
+        assert_eq!(
+            decide(&pick_session(0, 0, 20000), &prefs, &names(), &sections),
+            AutoAction::None
+        );
 
-        // 已是目标英雄但时间还早 → 什么都不做
+        // 还剩 20 秒 + 已经显示目标英雄 → 同样什么都不做
         assert_eq!(
             decide(&pick_session(103, 103, 20000), &prefs, &names(), &sections),
             AutoAction::None
         );
 
-        // 剩余 3 秒(<= 5) → 锁定
-        match decide(&pick_session(103, 103, 3000), &prefs, &names(), &sections) {
-            AutoAction::Pick { completed, .. } => assert!(completed),
+        // 剩余 3 秒(<= 5) → 一次性锁定 OP.GG 该分路最高胜率英雄
+        match decide(&pick_session(0, 0, 3000), &prefs, &names(), &sections) {
+            AutoAction::Pick {
+                action_id,
+                champion_id,
+                reason,
+            } => {
+                assert_eq!(action_id, 21);
+                assert_eq!(champion_id, 103);
+                assert!(reason.contains("胜率最高"), "{reason}");
+            }
             other => panic!("expected lock, got {other:?}"),
+        }
+
+        // 锁定阈值配置为 0 → 轮到我还剩很久也直接锁定
+        let instant = AutoPrefs {
+            auto_pick: true,
+            lock_before_seconds: 0.0,
+            ..Default::default()
+        };
+        match decide(&pick_session(0, 0, 20000), &instant, &names(), &sections) {
+            AutoAction::Pick { champion_id, .. } => assert_eq!(champion_id, 103),
+            other => panic!("expected instant lock, got {other:?}"),
         }
     }
 
@@ -577,12 +575,10 @@ mod tests {
         // 用户自己悬停了 238 → 立刻锁定它, 不换成别的
         match decide(&pick_session(238, 238, 20000), &prefs, &names(), &HashMap::new()) {
             AutoAction::Pick {
-                champion_id,
-                completed,
-                ..
+                champion_id, reason, ..
             } => {
                 assert_eq!(champion_id, 238);
-                assert!(completed);
+                assert!(reason.contains("已悬停"), "{reason}");
             }
             other => panic!("expected lock of the hovered champion, got {other:?}"),
         }
@@ -596,27 +592,28 @@ mod tests {
             ..Default::default()
         };
         let sections = sections_with(103, "middle", "54.3%", 1200);
-        match decide(&pick_session(0, 0, 20000), &prefs, &names(), &sections) {
+        // 到点(剩 3s <= 5s)锁定该分路胜率最高者
+        match decide(&pick_session(0, 0, 3000), &prefs, &names(), &sections) {
             AutoAction::Pick {
                 champion_id, reason, ..
             } => {
                 assert_eq!(champion_id, 103);
                 assert!(reason.contains("胜率最高"), "{reason}");
             }
-            other => panic!("expected winrate pick, got {other:?}"),
+            other => panic!("expected winrate lock, got {other:?}"),
         }
 
         // 样本太少(300 场以下)不采信 → 不做动作
         let thin = sections_with(103, "middle", "60.0%", 120);
         assert_eq!(
-            decide(&pick_session(0, 0, 20000), &prefs, &names(), &thin),
+            decide(&pick_session(0, 0, 3000), &prefs, &names(), &thin),
             AutoAction::None
         );
 
         // 分路不匹配也不采信
         let wrong_lane = sections_with(103, "top", "60.0%", 1200);
         assert_eq!(
-            decide(&pick_session(0, 0, 20000), &prefs, &names(), &wrong_lane),
+            decide(&pick_session(0, 0, 3000), &prefs, &names(), &wrong_lane),
             AutoAction::None
         );
     }

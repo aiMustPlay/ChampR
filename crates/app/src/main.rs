@@ -2778,12 +2778,12 @@ async fn maybe_auto_champ_select_action(
                 champion_id,
                 reason,
             } => (action_id, champion_id, true, "ban", reason),
+            // 预选已删除: 自动选人永远 completed=true(一次性锁定)
             lcu::autopick::AutoAction::Pick {
                 action_id,
                 champion_id,
-                completed,
                 reason,
-            } => (action_id, champion_id, completed, "pick", reason),
+            } => (action_id, champion_id, true, "pick", reason),
         };
 
     if champion_id <= 0 {
@@ -2810,8 +2810,7 @@ async fn maybe_auto_champ_select_action(
             // 播报一句, 让用户知道工具替他做了什么(选人阶段没有游戏内干扰)
             let say = match kind {
                 "ban" => format!("已禁用{}", champion_name_of(state, champion_id)),
-                _ if completed => format!("已锁定{}", champion_name_of(state, champion_id)),
-                _ => format!("已预选{}", champion_name_of(state, champion_id)),
+                _ => format!("已锁定{}", champion_name_of(state, champion_id)),
             };
             speak_status(state, &say);
         }
